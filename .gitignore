@@ -1,0 +1,23 @@
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+
+# bv (beads viewer) local config and caches
+.bv/
+
+.omp/workflow-artifacts/
+.omp/sessions/
+.omp/
+.agents/
+
+node_modules/
+
+# test env
+.scratchpad/
+
+# reference files
+oh-my-pi/
+
