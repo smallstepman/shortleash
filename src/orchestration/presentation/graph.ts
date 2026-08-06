@@ -30,9 +30,23 @@ const GRAPH_FORMATS = {
 	warning: 4,
 	accent: 5,
 	dim: 6,
+	muted: 7,
 } as const;
-
 type GraphColor = keyof typeof GRAPH_FORMATS;
+const ACTIVE_ANIMATION_PALETTES: readonly (readonly [GraphColor, GraphColor])[] = [
+	["accent", "warning"],
+	["success", "accent"],
+	["warning", "muted"],
+	["success", "warning"],
+	["dim", "accent"],
+	["muted", "success"],
+];
+
+type AnimationProfile = {
+	phase: number;
+	cadence: number;
+	palette: readonly [GraphColor, GraphColor];
+};
 
 type GraphTheme = {
 	fg(color: string, text: string): string;
@@ -149,8 +163,7 @@ export function renderExecutionGraph(
 				if (!source || !target) continue;
 				const fromStatus = state.agents[link.source.data]?.status ?? "pending";
 				const toStatus = state.agents[link.target.data]?.status ?? "pending";
-				const edgeId = `${link.source.data}\0${link.target.data}`;
-				const color = edgeColor(fromStatus, toStatus, animationFrame, edgeId);
+				const color = edgeColor(fromStatus, toStatus, animationFrame, link.source.data, link.target.data);
 				addDenseConnector(
 					connectorCells,
 					denseConnectorRoute(source, target),
@@ -166,8 +179,7 @@ export function renderExecutionGraph(
 			for (const link of graph.links()) {
 				const fromStatus = state.agents[link.source.data]?.status ?? "pending";
 				const toStatus = state.agents[link.target.data]?.status ?? "pending";
-				const edgeId = `${link.source.data}\0${link.target.data}`;
-				const color = edgeColor(fromStatus, toStatus, animationFrame, edgeId);
+				const color = edgeColor(fromStatus, toStatus, animationFrame, link.source.data, link.target.data);
 				for (let index = 1; index < link.points.length; index++) {
 					const from = toCanvasPoint(link.points[index - 1] as GraphPoint);
 					const to = toCanvasPoint(link.points[index] as GraphPoint);
@@ -396,10 +408,6 @@ function animationOffset(identity: string): number {
 	return hash >>> 0;
 }
 
-function animationTick(animationFrame: number, identity: string): number {
-	return animationFrame + (animationOffset(identity) % 10);
-}
-
 function nodeColor(status: string, animationFrame: number, identity = ""): GraphColor {
 	switch (status) {
 		case "completed":
@@ -408,7 +416,7 @@ function nodeColor(status: string, animationFrame: number, identity = ""): Graph
 		case "aborted":
 			return "error";
 		case "running":
-			return activeAnimationColor(animationFrame, `node:${identity}`);
+			return activeAnimationColor(animationFrame, identity);
 		case "waiting":
 			return "accent";
 		default:
@@ -416,21 +424,53 @@ function nodeColor(status: string, animationFrame: number, identity = ""): Graph
 	}
 }
 
-function edgeColor(fromStatus: string, toStatus: string, animationFrame: number, identity: string): GraphColor {
+function edgeColor(
+	fromStatus: string,
+	toStatus: string,
+	animationFrame: number,
+	fromName: string,
+	toName: string,
+): GraphColor {
 	if (fromStatus === "failed" || toStatus === "failed" || fromStatus === "aborted" || toStatus === "aborted") {
 		return "error";
 	}
-	if (isActiveEdge(fromStatus, toStatus)) {
-		return activeAnimationColor(animationFrame, `edge:${identity}`);
-	}
+	const activeOwner = activeAnimationOwner(fromStatus, toStatus, fromName, toName);
+	if (activeOwner !== undefined) return activeAnimationColor(animationFrame, activeOwner);
 	if (fromStatus === "completed" && toStatus === "completed") return "success";
 	return "borderMuted";
 }
 
+function activeAnimationOwner(
+	fromStatus: string,
+	toStatus: string,
+	fromName: string,
+	toName: string,
+): string | undefined {
+	if (fromStatus === "running") return fromName;
+	if (toStatus === "running") return toName;
+	return undefined;
+}
+
 function activeAnimationColor(animationFrame: number, identity: string): GraphColor {
-	const offset = animationOffset(identity);
-	const cadence = 2 + (offset % 3);
-	return Math.floor((animationFrame + offset) / cadence) % 2 === 0 ? "warning" : "accent";
+	const profile = animationProfile(`node:${identity}`);
+	return profile.palette[animationTickForProfile(animationFrame, profile) & 1] ?? profile.palette[0];
+}
+
+function animationProfile(identity: string): AnimationProfile {
+	const hash = animationOffset(identity);
+	return {
+		phase: (hash >>> 8) % 12,
+		cadence: 2 + ((hash >>> 16) % 3),
+		palette: ACTIVE_ANIMATION_PALETTES[hash % ACTIVE_ANIMATION_PALETTES.length] ?? ["accent", "warning"],
+	};
+}
+
+function animationTickForProfile(animationFrame: number, profile: AnimationProfile): number {
+	return Math.floor((animationFrame + profile.phase) / profile.cadence);
+}
+
+function animationTick(animationFrame: number, identity: string): number {
+	return animationTickForProfile(animationFrame, animationProfile(`node:${identity}`));
 }
 
 function centerGraphText(text: string, width: number): string {
@@ -439,17 +479,12 @@ function centerGraphText(text: string, width: number): string {
 	const left = Math.floor(remaining / 2);
 	return `${" ".repeat(left)}${clipped}${" ".repeat(remaining - left)}`;
 }
-
 function statusGlyph(status: string | undefined, animationFrame = 0, identity = ""): string {
 	switch (status) {
 		case "completed":
 			return "✓";
 		case "running":
-			return (
-				["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][
-					animationTick(animationFrame, `node:${identity}`) % 10
-				] ?? "⠋"
-			);
+			return ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][animationTick(animationFrame, identity) % 10] ?? "⠋";
 		case "failed":
 			return "×";
 		case "waiting":

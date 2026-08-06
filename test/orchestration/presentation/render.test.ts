@@ -103,7 +103,7 @@ swarm:
 			},
 		};
 		const frame0 = renderSwarmDashboardLines(definition, state, 100, identityTheme, 0).join("\n");
-		const frame1 = renderSwarmDashboardLines(definition, state, 100, identityTheme, 1).join("\n");
+		const frame1 = renderSwarmDashboardLines(definition, state, 100, identityTheme, 4).join("\n");
 		expect(frame0).toContain("╱");
 		expect(frame0).toContain("╲");
 		expect(frame0).not.toEqual(frame1);
@@ -191,6 +191,16 @@ swarm:
 		expect(activeFrame1).toContain("<warning>");
 		expect(activeFrame1).toContain("<accent>");
 		expect(activeFrame1).not.toEqual(activeFrame2);
+		const activeLines = activeFrame1.split("\n");
+		const activeNodeIndex = activeLines.findIndex(line => line.includes("root02"));
+		const activeNodeColor = activeLines[activeNodeIndex]?.match(/<([a-z]+)>[^<]*root02/)?.[1];
+		expect(activeNodeIndex).toBeGreaterThanOrEqual(0);
+		expect(activeNodeColor).toBeDefined();
+		expect(
+			activeLines
+				.slice(activeNodeIndex + 1, activeNodeIndex + 5)
+				.some(line => line.includes(`<${activeNodeColor ?? ""}>`)),
+		).toBe(true);
 		const perNodeState: SwarmState = {
 			...activeState,
 			agents: {
@@ -201,6 +211,21 @@ swarm:
 		const perNodeFrame = renderExecutionGraph(definition, perNodeState, 60, identityTheme, 0).join("\n");
 		const ticks = [...perNodeFrame.matchAll(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g)].map(match => match[0]);
 		expect(new Set(ticks).size).toBeGreaterThan(1);
+		const manyActiveState: SwarmState = {
+			...state,
+			agents: {
+				...state.agents,
+				root01: { ...state.agents.root01, status: "running" },
+				root02: { ...state.agents.root02, status: "running" },
+				root03: { ...state.agents.root03, status: "running" },
+				root04: { ...state.agents.root04, status: "running" },
+			},
+		};
+		const manyActiveFrame = renderExecutionGraph(definition, manyActiveState, 60, colorTheme, 1).join("\n");
+		const activeColors = new Set(
+			[...manyActiveFrame.matchAll(/<(accent|warning|success|muted|dim)>/g)].map(match => match[1]),
+		);
+		expect(activeColors.size).toBeGreaterThan(2);
 	});
 
 	it("keeps library-backed graph output deterministic and bounded at narrow widths", () => {
@@ -331,7 +356,10 @@ swarm:
 		});
 		expect(calls.some(([color, text]) => color === "success" && text.includes("done"))).toBe(true);
 		expect(
-			calls.some(([color, text]) => (color === "warning" || color === "accent") && text.includes("active")),
+			calls.some(
+				([color, text]) =>
+					["accent", "warning", "success", "muted", "dim"].includes(color) && text.includes("active"),
+			),
 		).toBe(true);
 	});
 });
