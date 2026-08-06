@@ -107,6 +107,79 @@ swarm:
 		expect(frame0).toContain("╲");
 		expect(frame0).not.toEqual(frame1);
 	});
+
+	it("uses compact dependency rows once the graph reaches eight agents", () => {
+		const definition = parseSwarm(`
+swarm:
+  name: dense
+  workspace: .
+  agents:
+    root01:
+      role: root
+      task: root
+    root02:
+      role: root
+      task: root
+    root03:
+      role: root
+      task: root
+    root04:
+      role: root
+      task: root
+    merge01:
+      role: merge
+      task: merge
+      waits_for: [root01, root02]
+    merge02:
+      role: merge
+      task: merge
+      waits_for: [root02, root03]
+    merge03:
+      role: merge
+      task: merge
+      waits_for: [root03, root04]
+    finale:
+      role: finale
+      task: finale
+      waits_for: [merge01, merge02, merge03]
+`);
+		const state: SwarmState = {
+			name: "dense",
+			status: "running",
+			mode: "pipeline",
+			iteration: 0,
+			targetCount: 1,
+			startedAt: Date.now(),
+			agents: {
+				root01: { name: "root01", status: "completed", iteration: 0, wave: 0 },
+				root02: { name: "root02", status: "completed", iteration: 0, wave: 0 },
+				root03: { name: "root03", status: "pending", iteration: 0, wave: 0 },
+				root04: { name: "root04", status: "pending", iteration: 0, wave: 0 },
+				merge01: { name: "merge01", status: "waiting", iteration: 0, wave: 1 },
+				merge02: { name: "merge02", status: "pending", iteration: 0, wave: 1 },
+				merge03: { name: "merge03", status: "pending", iteration: 0, wave: 1 },
+				finale: { name: "finale", status: "pending", iteration: 0, wave: 2 },
+			},
+		};
+		const lines = renderSwarmDashboardLines(definition, state, 60, identityTheme);
+		const graphStart = lines.indexOf(" Execution graph");
+		const graphEnd = lines.indexOf(" Recent native actions");
+		const graph = lines.slice(graphStart + 1, graphEnd);
+		const rendered = graph.join("\n");
+		expect(rendered).toContain("Dense dependency map · 8 agents");
+		expect(rendered).toContain("← root01, root02");
+		expect(rendered).toContain("Layer 3");
+		expect(rendered).not.toContain("╱");
+		expect(rendered).not.toContain("╲");
+		for (const name of definition.agentOrder) expect(rendered).toContain(name);
+		for (const line of graph) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+		const narrow = renderSwarmDashboardLines(definition, state, 10, identityTheme);
+		const narrowGraph = narrow.slice(
+			narrow.indexOf(" Execution graph") + 1,
+			narrow.indexOf(" Recent native actions"),
+		);
+		for (const line of narrowGraph) expect(visibleWidth(line)).toBeLessThanOrEqual(10);
+	});
 	it("keeps library-backed graph output deterministic and bounded at narrow widths", () => {
 		const definition = parseSwarm(`
 swarm:

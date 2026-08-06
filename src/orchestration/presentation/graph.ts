@@ -7,6 +7,7 @@ import type { SwarmState } from "../execution/state";
 const GRAPH_NODE_HEIGHT = 3;
 const MIN_GRAPH_NODE_WIDTH = 8;
 const MAX_GRAPH_NODE_WIDTH = 24;
+const DENSE_GRAPH_THRESHOLD = 8;
 
 const GRAPH_FORMATS = {
 	borderMuted: 1,
@@ -34,9 +35,9 @@ type PositionedNode = {
 };
 
 /**
- * Render the execution dependency graph with d3-dag layout and a text canvas.
- * The canvas owns clipping and primitive drawing; this module only maps the
- * domain graph and status palette onto those library primitives.
+ * Render the execution dependency graph. Small graphs use the d3-dag canvas
+ * layout; dense graphs use compact dependency rows to avoid connector overlap.
+ * Both paths preserve status styling and width-bounded output.
  */
 export function renderExecutionGraph(
 	definition: SwarmDefinition,
@@ -83,6 +84,9 @@ export function renderExecutionGraph(
 		const graph = graphConnect().single(true)(links);
 		if (!graph.acyclic()) {
 			return graphFailure("Dependency cycle prevents graph layout.", width, theme);
+		}
+		if (names.length >= DENSE_GRAPH_THRESHOLD) {
+			return renderDenseGraph(names, definition, state, width, theme, animationFrame);
 		}
 
 		const nodeWidth = graphNodeWidth(names, width);
@@ -143,6 +147,51 @@ export function renderExecutionGraph(
 
 function graphFailure(message: string, width: number, theme: GraphTheme): string[] {
 	return [theme.fg("error", truncateToWidth(`  ${message}`, Math.max(1, Math.floor(width))))];
+}
+
+function renderDenseGraph(
+	names: readonly string[],
+	definition: SwarmDefinition,
+	state: SwarmState,
+	width: number,
+	theme: GraphTheme,
+	animationFrame: number,
+): string[] {
+	const boundedWidth = Math.max(1, Math.floor(width));
+	const depths = new Map<string, number>();
+	const depthOf = (name: string): number => {
+		const cached = depths.get(name);
+		if (cached !== undefined) return cached;
+		const dependencies =
+			definition.agents.get(name)?.waitsFor.filter(dependency => definition.agents.has(dependency)) ?? [];
+		const depth =
+			dependencies.length === 0 ? 0 : Math.max(...dependencies.map(dependency => depthOf(dependency))) + 1;
+		depths.set(name, depth);
+		return depth;
+	};
+
+	for (const name of names) depthOf(name);
+
+	const lines = [theme.fg("dim", truncateToWidth(`  Dense dependency map · ${names.length} agents`, boundedWidth))];
+	const maxDepth = Math.max(...names.map(name => depths.get(name) ?? 0));
+	for (let depth = 0; depth <= maxDepth; depth++) {
+		const layer = names.filter(name => depths.get(name) === depth);
+		if (layer.length === 0) continue;
+		lines.push(theme.fg("dim", truncateToWidth(`  Layer ${depth + 1}`, boundedWidth)));
+		for (const [index, name] of layer.entries()) {
+			const agent = definition.agents.get(name);
+			const dependencies = agent?.waitsFor.filter(dependency => definition.agents.has(dependency)) ?? [];
+			const status = state.agents[name]?.status ?? "pending";
+			const branch = depth === 0 ? "  " : index === layer.length - 1 ? "  └─ " : "  ├─ ";
+			const node = theme.fg(
+				nodeColor(status, animationFrame),
+				`${branch}${statusGlyph(status, animationFrame)} ${name}`,
+			);
+			const dependencyText = dependencies.length > 0 ? theme.fg("dim", ` ← ${dependencies.join(", ")}`) : "";
+			lines.push(truncateToWidth(`${node}${dependencyText}`, boundedWidth));
+		}
+	}
+	return lines;
 }
 
 function orderedAgentNames(definition: SwarmDefinition): string[] {
