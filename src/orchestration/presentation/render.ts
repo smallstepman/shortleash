@@ -97,7 +97,10 @@ export function renderSwarmWidgetLine(
 export interface SwarmDashboardTheme {
 	fg(color: string, text: string): string;
 }
-
+export interface SwarmDashboardRenderOptions {
+	/** Include the interactive Alt+W cancellation shortcut in the footer. */
+	cancelShortcut?: boolean;
+}
 /**
  * Render the dashboard as a bordered panel. The caller can place this panel
  * anywhere an overlay supports; the graph itself is independent of placement.
@@ -135,6 +138,7 @@ export function renderSwarmDashboardLines(
 	width: number,
 	theme: SwarmDashboardTheme,
 	animationFrame = 0,
+	options: SwarmDashboardRenderOptions = {},
 ): string[] {
 	const lines: string[] = [];
 	const boundedWidth = Math.max(10, Math.floor(width));
@@ -189,8 +193,10 @@ export function renderSwarmDashboardLines(
 		}
 	}
 
-	lines.push("");
-	lines.push(theme.fg("dim", " q/Esc/Alt+W close · ↑/↓ scroll · live graph"));
+	const controls = options.cancelShortcut
+		? " q/Esc/Alt+W close · x cancel · ↑/↓/jk scroll · ←→/hl page · live graph"
+		: " q/Esc/Alt+W close · ↑/↓/jk scroll · live graph";
+	lines.push(theme.fg("dim", controls));
 	return lines;
 }
 

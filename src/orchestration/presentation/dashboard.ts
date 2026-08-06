@@ -1,16 +1,16 @@
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { Text as TextComponent } from "@oh-my-pi/pi-coding-agent";
-import { matchesKey, ScrollView } from "@oh-my-pi/pi-tui";
+import { matchesKey, ScrollView, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { SwarmDefinition } from "../definition/schema";
 import type { StateTracker } from "../execution/state";
-import { renderSwarmDashboardPanelLines, renderSwarmWidgetLine } from "./render";
+import { renderSwarmDashboardLines, renderSwarmWidgetLine } from "./render";
 
 export interface SwarmDashboardHandle {
 	update(): void;
 	dispose(): Promise<void>;
 }
 
-/** Attach the live widget and Alt+W dashboard to any active swarm execution. */
+/** Attach the live widget and a centered fullscreen Alt+W dashboard to any active swarm execution. */
 export function attachSwarmDashboard(
 	ctx: ExtensionContext,
 	definition: SwarmDefinition,
@@ -45,46 +45,79 @@ export function attachSwarmDashboard(
 				overlayTui = tui;
 				animationTimer = setInterval(() => tui.requestRender(), 120);
 				let scrollOffset = 0;
-				let panelWidth = Math.max(24, process.stdout.columns ?? 120);
+				let panelWidth = Math.max(12, process.stdout.columns ?? 120);
 
-				const renderBody = (width: number): string[] => {
-					const dashboardWidth = Math.min(Math.max(48, Math.floor(width * 0.48)), Math.max(12, width));
-					const leftPadding = " ".repeat(Math.max(0, width - dashboardWidth));
-					return renderSwarmDashboardPanelLines(
+				const getLayout = (width: number) => {
+					const availableWidth = Math.max(12, Math.floor(width));
+					const dashboardWidth = Math.min(availableWidth, Math.max(64, Math.floor(availableWidth * 0.94)));
+					const viewportRows = Math.max(8, process.stdout.rows ?? 40);
+					const contentWidth = Math.max(8, dashboardWidth - 2);
+					const innerHeight = Math.max(1, viewportRows - 2);
+					const leftPadding = Math.max(0, Math.floor((availableWidth - dashboardWidth) / 2));
+					const rightPadding = Math.max(0, availableWidth - dashboardWidth - leftPadding);
+					return {
+						availableWidth,
+						dashboardWidth,
+						viewportRows,
+						contentWidth,
+						innerHeight,
+						leftPadding,
+						rightPadding,
+					};
+				};
+
+				const createViewport = (width: number) => {
+					const layout = getLayout(width);
+					const content = renderSwarmDashboardLines(
 						definition,
 						stateTracker.state,
-						dashboardWidth,
+						layout.contentWidth,
 						theme,
 						Math.floor(Date.now() / 120),
-					).map(line => leftPadding + line);
+						{ cancelShortcut: true },
+					);
+					const view = new ScrollView(content, {
+						height: layout.innerHeight,
+						scrollbar: "auto",
+						totalRows: content.length,
+						theme: {
+							track: text => theme.fg("dim", text),
+							thumb: text => theme.fg("accent", text),
+						},
+					});
+					view.setScrollOffset(scrollOffset);
+					return { layout, view };
+				};
+
+				const frameLine = (line: string, layout: ReturnType<typeof getLayout>): string => {
+					const clipped = truncateToWidth(line, layout.contentWidth);
+					const padding = " ".repeat(Math.max(0, layout.contentWidth - visibleWidth(clipped)));
+					return `${theme.fg("borderMuted", "│")}${clipped}${padding}${theme.fg("borderMuted", "│")}`;
+				};
+
+				const renderBody = (width: number): string[] => {
+					const { layout, view } = createViewport(width);
+					scrollOffset = view.getScrollOffset();
+					const horizontal = "─".repeat(Math.max(0, layout.dashboardWidth - 2));
+					const border = theme.fg("borderMuted", `╭${horizontal}╮`);
+					const bottom = theme.fg("borderMuted", `╰${horizontal}╯`);
+					const panel = [border, ...view.render(layout.contentWidth).map(line => frameLine(line, layout)), bottom];
+					return panel.map(line => `${" ".repeat(layout.leftPadding)}${line}${" ".repeat(layout.rightPadding)}`);
 				};
 
 				closeDashboard = () => done(undefined);
 				return {
 					render(width: number): readonly string[] {
 						panelWidth = Math.max(12, Math.floor(width));
-						const terminalRows = process.stdout.rows ?? 40;
-						const body = renderBody(panelWidth);
-						const viewportRows = Math.max(6, terminalRows - 4);
-						const maxScroll = Math.max(0, body.length - viewportRows);
-						scrollOffset = Math.min(scrollOffset, maxScroll);
-						const view = new ScrollView(body.slice(scrollOffset, scrollOffset + viewportRows), {
-							height: viewportRows,
-							scrollbar: "auto",
-							totalRows: body.length,
-							theme: {
-								track: text => theme.fg("dim", text),
-								thumb: text => theme.fg("accent", text),
-							},
-						});
-						view.setScrollOffset(scrollOffset);
-						return view.render(panelWidth);
+						return renderBody(panelWidth);
 					},
 					handleInput(data: string): void {
-						const terminalRows = process.stdout.rows ?? 40;
-						const bodyLength = renderBody(panelWidth).length;
-						const viewportRows = Math.max(6, terminalRows - 4);
-						const maxScroll = Math.max(0, bodyLength - viewportRows);
+						if (data === "x") {
+							onCancel();
+							ctx.ui.notify(`Cancellation requested for swarm '${definition.name}'.`, "warning");
+							done(undefined);
+							return;
+						}
 						if (data === "c" || matchesKey(data, "ctrl+c")) {
 							onCancel();
 							ctx.ui.notify(`Cancellation requested for swarm '${definition.name}'.`, "info");
@@ -95,16 +128,28 @@ export function attachSwarmDashboard(
 							done(undefined);
 							return;
 						}
-						if (matchesKey(data, "up") || data === "k") {
-							scrollOffset = Math.max(0, scrollOffset - 1);
-						} else if (matchesKey(data, "down") || data === "j") {
-							scrollOffset = Math.min(maxScroll, scrollOffset + 1);
-						} else if (matchesKey(data, "pageUp")) {
-							scrollOffset = Math.max(0, scrollOffset - viewportRows);
-						} else if (matchesKey(data, "pageDown")) {
-							scrollOffset = Math.min(maxScroll, scrollOffset + viewportRows);
+
+						const { view } = createViewport(panelWidth);
+						let moved = false;
+						if (data === "k") {
+							view.scroll(-1);
+							moved = true;
+						} else if (data === "j") {
+							view.scroll(1);
+							moved = true;
+						} else if (data === "h") {
+							view.page(-1);
+							moved = true;
+						} else if (data === "l") {
+							view.page(1);
+							moved = true;
+						} else {
+							moved = view.handleScrollKey(data);
 						}
-						tui.requestRender();
+						if (moved) {
+							scrollOffset = view.getScrollOffset();
+							tui.requestRender();
+						}
 					},
 					invalidate(): void {},
 					dispose(): void {

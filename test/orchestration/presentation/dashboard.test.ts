@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { parseSwarm } from "../../../src/orchestration/definition/schema";
 import { StateTracker } from "../../../src/orchestration/execution/state";
 import { attachSwarmDashboard } from "../../../src/orchestration/presentation/dashboard";
@@ -28,9 +29,8 @@ swarm:
 			let terminalInput: ((data: string) => unknown) | undefined;
 			let unsubscribeCalled = false;
 			let customOptions: unknown;
-			let customComponent: { render(width: number): readonly string[] } | undefined;
-			let finishCustom: (() => void) | undefined;
-
+			let customComponent: { render(width: number): readonly string[]; handleInput(data: string): void } | undefined;
+			let cancelRequested = 0;
 			const ui = {
 				setWidget(key: string, content: unknown, options: unknown) {
 					widgets.push({ key, content, options });
@@ -50,19 +50,20 @@ swarm:
 						resolveCustom = resolve;
 					});
 					const done = () => resolveCustom();
-					finishCustom = done;
 					customComponent = (await factory(
 						{ requestRender() {} },
 						{ fg: (_color: string, text: string) => text },
 						{},
 						done,
-					)) as { render(width: number): readonly string[] };
+					)) as { render(width: number): readonly string[]; handleInput(data: string): void };
 					return completed;
 				},
 			} as unknown as ExtensionContext["ui"];
 			const ctx = { hasUI: true, ui } as unknown as ExtensionContext;
 
-			const dashboard = attachSwarmDashboard(ctx, definition, stateTracker, () => {});
+			const dashboard = attachSwarmDashboard(ctx, definition, stateTracker, () => {
+				cancelRequested++;
+			});
 			expect(widgets[0]).toMatchObject({
 				key: "swarm-dashboard-ui",
 				options: { placement: "belowEditor" },
@@ -72,12 +73,21 @@ swarm:
 			await Promise.resolve();
 			expect(customOptions).toEqual({ overlay: true });
 			expect(customComponent).toBeDefined();
-			const rendered = customComponent?.render(100).join("\n") ?? "";
+			const renderedLines = customComponent?.render(100) ?? [];
+			const rendered = renderedLines.join("\n");
 			expect(rendered).toContain("Swarm dashboard-ui");
 			expect(rendered).toContain("Execution graph");
+			expect(visibleWidth(renderedLines[0] ?? "")).toBe(100);
+			expect(renderedLines[0]).toContain("╭");
+			expect(renderedLines.at(-1)).toContain("╯");
 
-			finishCustom?.();
+			customComponent?.handleInput("j");
+			customComponent?.handleInput("k");
+			customComponent?.handleInput("h");
+			customComponent?.handleInput("l");
+			customComponent?.handleInput("x");
 			await dashboard.dispose();
+			expect(cancelRequested).toBe(1);
 			expect(widgets.at(-1)?.content).toBeUndefined();
 			expect(unsubscribeCalled).toBe(true);
 		} finally {
