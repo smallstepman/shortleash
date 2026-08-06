@@ -107,8 +107,7 @@ swarm:
 		expect(frame0).toContain("╲");
 		expect(frame0).not.toEqual(frame1);
 	});
-
-	it("uses compact dependency rows once the graph reaches eight agents", () => {
+	it("uses lighter connectors for dense graphs without changing node layout", () => {
 		const definition = parseSwarm(`
 swarm:
   name: dense
@@ -166,20 +165,17 @@ swarm:
 		const graphEnd = lines.indexOf(" Recent native actions");
 		const graph = lines.slice(graphStart + 1, graphEnd);
 		const rendered = graph.join("\n");
-		expect(rendered).toContain("Dense dependency map · 8 agents");
-		expect(rendered).toContain("← root01, root02");
-		expect(rendered).toContain("Layer 3");
+		expect(rendered).toContain("╭");
+		expect(rendered).toContain("╰");
+		expect(rendered).not.toContain("Dense dependency map");
+		expect(rendered).not.toContain("←");
 		expect(rendered).not.toContain("╱");
 		expect(rendered).not.toContain("╲");
+		expect(rendered).toMatch(/[·┄┊]/);
 		for (const name of definition.agentOrder) expect(rendered).toContain(name);
 		for (const line of graph) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
-		const narrow = renderSwarmDashboardLines(definition, state, 10, identityTheme);
-		const narrowGraph = narrow.slice(
-			narrow.indexOf(" Execution graph") + 1,
-			narrow.indexOf(" Recent native actions"),
-		);
-		for (const line of narrowGraph) expect(visibleWidth(line)).toBeLessThanOrEqual(10);
 	});
+
 	it("keeps library-backed graph output deterministic and bounded at narrow widths", () => {
 		const definition = parseSwarm(`
 swarm:

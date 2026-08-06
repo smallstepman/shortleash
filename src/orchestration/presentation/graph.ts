@@ -35,9 +35,9 @@ type PositionedNode = {
 };
 
 /**
- * Render the execution dependency graph. Small graphs use the d3-dag canvas
- * layout; dense graphs use compact dependency rows to avoid connector overlap.
- * Both paths preserve status styling and width-bounded output.
+ * Render the execution dependency graph with a d3-dag layout and a text canvas.
+ * Dense graphs keep the same nodes and paths but use lighter connector glyphs
+ * to reduce visual noise. The canvas owns clipping and primitive drawing.
  */
 export function renderExecutionGraph(
 	definition: SwarmDefinition,
@@ -85,9 +85,6 @@ export function renderExecutionGraph(
 		if (!graph.acyclic()) {
 			return graphFailure("Dependency cycle prevents graph layout.", width, theme);
 		}
-		if (names.length >= DENSE_GRAPH_THRESHOLD) {
-			return renderDenseGraph(names, definition, state, width, theme, animationFrame);
-		}
 
 		const nodeWidth = graphNodeWidth(names, width);
 		const nodeSize: readonly [number, number] = [nodeWidth, GRAPH_NODE_HEIGHT];
@@ -128,7 +125,15 @@ export function renderExecutionGraph(
 			for (let index = 1; index < link.points.length; index++) {
 				const from = toCanvasPoint(link.points[index - 1] as GraphPoint);
 				const to = toCanvasPoint(link.points[index] as GraphPoint);
-				line(surface, from[0], from[1], to[0], to[1], connectorGlyph(from, to), GRAPH_FORMATS[color]);
+				line(
+					surface,
+					from[0],
+					from[1],
+					to[0],
+					to[1],
+					connectorGlyph(from, to, names.length >= DENSE_GRAPH_THRESHOLD),
+					GRAPH_FORMATS[color],
+				);
 			}
 		}
 
@@ -147,51 +152,6 @@ export function renderExecutionGraph(
 
 function graphFailure(message: string, width: number, theme: GraphTheme): string[] {
 	return [theme.fg("error", truncateToWidth(`  ${message}`, Math.max(1, Math.floor(width))))];
-}
-
-function renderDenseGraph(
-	names: readonly string[],
-	definition: SwarmDefinition,
-	state: SwarmState,
-	width: number,
-	theme: GraphTheme,
-	animationFrame: number,
-): string[] {
-	const boundedWidth = Math.max(1, Math.floor(width));
-	const depths = new Map<string, number>();
-	const depthOf = (name: string): number => {
-		const cached = depths.get(name);
-		if (cached !== undefined) return cached;
-		const dependencies =
-			definition.agents.get(name)?.waitsFor.filter(dependency => definition.agents.has(dependency)) ?? [];
-		const depth =
-			dependencies.length === 0 ? 0 : Math.max(...dependencies.map(dependency => depthOf(dependency))) + 1;
-		depths.set(name, depth);
-		return depth;
-	};
-
-	for (const name of names) depthOf(name);
-
-	const lines = [theme.fg("dim", truncateToWidth(`  Dense dependency map · ${names.length} agents`, boundedWidth))];
-	const maxDepth = Math.max(...names.map(name => depths.get(name) ?? 0));
-	for (let depth = 0; depth <= maxDepth; depth++) {
-		const layer = names.filter(name => depths.get(name) === depth);
-		if (layer.length === 0) continue;
-		lines.push(theme.fg("dim", truncateToWidth(`  Layer ${depth + 1}`, boundedWidth)));
-		for (const [index, name] of layer.entries()) {
-			const agent = definition.agents.get(name);
-			const dependencies = agent?.waitsFor.filter(dependency => definition.agents.has(dependency)) ?? [];
-			const status = state.agents[name]?.status ?? "pending";
-			const branch = depth === 0 ? "  " : index === layer.length - 1 ? "  └─ " : "  ├─ ";
-			const node = theme.fg(
-				nodeColor(status, animationFrame),
-				`${branch}${statusGlyph(status, animationFrame)} ${name}`,
-			);
-			const dependencyText = dependencies.length > 0 ? theme.fg("dim", ` ← ${dependencies.join(", ")}`) : "";
-			lines.push(truncateToWidth(`${node}${dependencyText}`, boundedWidth));
-		}
-	}
-	return lines;
 }
 
 function orderedAgentNames(definition: SwarmDefinition): string[] {
@@ -253,9 +213,14 @@ function graphColor(format: number): GraphColor | undefined {
 	return undefined;
 }
 
-function connectorGlyph(from: GraphPoint, to: GraphPoint): string {
-	if (Math.abs(to[0] - from[0]) < 0.5) return "│";
-	return to[0] > from[0] ? "╲" : "╱";
+function connectorGlyph(from: GraphPoint, to: GraphPoint, simplify: boolean): string {
+	if (!simplify) {
+		if (Math.abs(to[0] - from[0]) < 0.5) return "│";
+		return to[0] > from[0] ? "╲" : "╱";
+	}
+	if (Math.abs(to[1] - from[1]) < 0.5) return "┄";
+	if (Math.abs(to[0] - from[0]) < 0.5) return "┊";
+	return "·";
 }
 
 function nodeColor(status: string, animationFrame: number): GraphColor {
