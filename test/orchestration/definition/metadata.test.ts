@@ -11,6 +11,7 @@ const validMetadata = {
 		name: "metadata-schema",
 		workspace: ".",
 		mode: "pipeline",
+		agent_execution: "subagents",
 		agents: {
 			discover: {
 				role: "investigator",
@@ -30,6 +31,7 @@ const validMetadata = {
 describe("Beads Shortleash metadata schema", () => {
 	it("exposes a strict spawn-definition schema while preserving unrelated metadata", () => {
 		expect(SWARM_DEFINITION_JSON_SCHEMA.required).toEqual(["name", "workspace"]);
+		expect(SWARM_DEFINITION_JSON_SCHEMA.properties.agent_execution.enum).toEqual(["herdr", "subagents"]);
 		expect(SWARM_DEFINITION_JSON_SCHEMA.additionalProperties).toBe(false);
 		expect(SWARM_METADATA_JSON_SCHEMA.additionalProperties).toBe(true);
 		expect(SWARM_METADATA_JSON_SCHEMA.properties.shortleash).toBe(SWARM_DEFINITION_JSON_SCHEMA);
@@ -38,6 +40,7 @@ describe("Beads Shortleash metadata schema", () => {
 	it("validates the standard metadata.shortleash shape and ignores sibling metadata", () => {
 		const definition = validateSwarmMetadata(validMetadata);
 		expect(definition.name).toBe("metadata-schema");
+		expect(definition.agentExecution).toBe("subagents");
 		expect([...definition.agents.keys()]).toEqual(["discover", "implement"]);
 		expect(hasSwarmMetadata(JSON.stringify(validMetadata))).toBe(true);
 	});

@@ -154,10 +154,39 @@ swarm:
 
 		expect(definition.workspaceIsolation).toBe("none");
 		expect(definition.inheritHistory).toBe(false);
+		expect(definition.agentExecution).toBe("herdr");
 		expect(definition.agents.get("worker")).toMatchObject({
 			workspaceIsolation: undefined,
 			inheritHistory: undefined,
 		});
+	});
+
+	it("selects the in-process subagent backend when configured", () => {
+		const definition = parseSwarm(`
+swarm:
+  name: subagents
+  workspace: .
+  agent_execution: subagents
+  agents:
+    worker:
+      role: engineer
+      task: implement
+`);
+
+		expect(definition.agentExecution).toBe("subagents");
+		expect(serializeSwarmDefinition(definition).agentExecution).toBe("subagents");
+		expect(() =>
+			parseSwarm(`
+swarm:
+  name: invalid-execution
+  workspace: .
+  agent_execution: threads
+  agents:
+    worker:
+      role: engineer
+      task: implement
+`),
+		).toThrow("Invalid agent_execution");
 	});
 
 	it("parses global policies and per-agent overrides", () => {

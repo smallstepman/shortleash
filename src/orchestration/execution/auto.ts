@@ -32,13 +32,15 @@ export interface ClaimedSwarmRunnerOptions {
 	settings: Settings;
 	signal?: AbortSignal;
 	logger?: SwarmPluginLogger;
+	/** Intentionally execute again when persisted state already exists. */
+	restart?: boolean;
 	/** Current-session direct runner supplied by the OMP adapter. */
-	directRunner?: (plan: SwarmPlan) => Promise<ClaimedSwarmResult>;
+	directRunner?: (plan: SwarmPlan, options: { restart: boolean }) => Promise<ClaimedSwarmResult>;
 	/** Optional control seam for deterministic host integration tests. */
 	herdrControl?: HerdrControl;
 }
 
-/** Run the swarm definition attached to a claimed Bead exactly once per persisted state. */
+/** Run the swarm definition attached to a claimed Bead, reusing persisted state unless restart is explicit. */
 export async function runClaimedSwarm(
 	issueId: string,
 	options: ClaimedSwarmRunnerOptions,
@@ -48,12 +50,12 @@ export async function runClaimedSwarm(
 	const { definition, workspace, waves, definitionPath, pluginPaths, policyRegistry } = plan;
 	const stateTracker = new StateTracker(workspace, definition.name);
 	const existing = await stateTracker.load();
-	if (existing) return existingRunResult(existing.status, definition.name);
+	if (existing && !options.restart) return existingRunResult(existing.status, definition.name);
 	if (definition.agents.size === 0) {
 		if (!options.directRunner) {
 			throw new Error("Direct Shortleash definitions attached to Beads require the current OMP session runner.");
 		}
-		return options.directRunner(plan);
+		return options.directRunner(plan, { restart: options.restart === true });
 	}
 
 	await fs.mkdir(workspace, { recursive: true });
@@ -67,12 +69,16 @@ export async function runClaimedSwarm(
 	});
 
 	try {
-		await stateTracker.acquireRunLock({ definitionHash, workspace });
+		await stateTracker.acquireRunLock(
+			{ definitionHash, workspace },
+			{ allowStaleRecovery: options.restart === true },
+		);
 		await stateTracker.init([...definition.agents.keys()], definition.targetCount, definition.mode, {
 			definitionHash,
 			workspace,
 			definitionPath,
 			manifest,
+			restart: options.restart,
 		});
 	} catch (error) {
 		await stateTracker.releaseRunLock().catch(() => {});
@@ -85,6 +91,7 @@ export async function runClaimedSwarm(
 		}
 		throw error;
 	}
+
 	const parentMessages = ctx.sessionManager
 		.getBranch()
 		.flatMap(entry => (entry.type === "message" ? [entry.message] : []));
@@ -100,14 +107,17 @@ export async function runClaimedSwarm(
 		dashboard = attachSwarmDashboard(ctx, definition, stateTracker, () => {
 			runAbortController.abort(new Error("Cancelled from the Shortleash dashboard."));
 		});
-		herdrSession = await createHerdrSwarmSession({
-			client: options.herdrControl,
-			definition,
-			definitionInput: definitionPath,
-			workspace,
-			cwd: ctx.cwd,
-			logger,
-		});
+		herdrSession =
+			definition.agentExecution === "herdr"
+				? await createHerdrSwarmSession({
+						client: options.herdrControl,
+						definition,
+						definitionInput: definitionPath,
+						workspace,
+						cwd: ctx.cwd,
+						logger,
+					})
+				: undefined;
 		const beadsProjector = plan.source.beadId ? createSwarmBeadsProjector(plan.source.beadId, ctx.cwd) : undefined;
 		const result = await new PipelineController(definition, waves, stateTracker).run({
 			workspace,

@@ -28,6 +28,7 @@ interface RawSwarmConfig {
 	/** Prompt used when this definition is executed in the current OMP session. */
 	task?: unknown;
 	mode?: unknown;
+	agent_execution?: unknown;
 	target_count?: unknown;
 	failure_policy?: unknown;
 	max_concurrency?: unknown;
@@ -51,6 +52,9 @@ interface RawSwarmConfig {
 // ============================================================================
 
 export type SwarmMode = "pipeline" | "parallel" | "sequential";
+
+/** Selects the host used for declared Shortleash agents. */
+export type SwarmAgentExecution = "herdr" | "subagents";
 
 export type SwarmFailurePolicy = "fail_fast" | "continue" | "skip_dependents";
 
@@ -81,6 +85,8 @@ export interface SwarmDefinition {
 	workspaceIsolation: SwarmIsolationMode;
 	/** Whether workers inherit the parent chat history by default. */
 	inheritHistory: boolean;
+	/** Execution backend for declared agents; Herdr opens a visible tab by default. */
+	agentExecution: SwarmAgentExecution;
 	mode: SwarmMode;
 	targetCount: number;
 	failurePolicy: SwarmFailurePolicy;
@@ -102,6 +108,7 @@ export interface SwarmDefinition {
 // ============================================================================
 
 const VALID_MODES = new Set<string>(["pipeline", "parallel", "sequential"]);
+const VALID_AGENT_EXECUTIONS = new Set<SwarmAgentExecution>(["herdr", "subagents"]);
 const VALID_FAILURE_POLICIES = new Set<SwarmFailurePolicy>(["fail_fast", "continue", "skip_dependents"]);
 const VALID_SWARM_NAME = /^[a-zA-Z0-9._-]+$/;
 const VALID_POLICY_PARAM_KEY = /^[A-Za-z_][A-Za-z0-9_-]*$/;
@@ -111,6 +118,7 @@ export const RAW_SWARM_KEYS: ReadonlySet<string> = new Set([
 	"task",
 	"mode",
 	"target_count",
+	"agent_execution",
 	"failure_policy",
 	"max_concurrency",
 	"agent_timeout_ms",
@@ -160,6 +168,14 @@ function parseFailurePolicy(value: unknown): SwarmFailurePolicy {
 	}
 	return value as SwarmFailurePolicy;
 }
+function parseAgentExecution(value: unknown): SwarmAgentExecution {
+	if (value === undefined) return "herdr";
+	if (typeof value !== "string" || !VALID_AGENT_EXECUTIONS.has(value as SwarmAgentExecution)) {
+		throw new Error(`Invalid agent_execution '${String(value)}'. Must be one of: herdr, subagents`);
+	}
+	return value as SwarmAgentExecution;
+}
+
 function firstDefined(...values: unknown[]): unknown {
 	return values.find(value => value !== undefined);
 }
@@ -375,6 +391,7 @@ export function parseSwarm(content: string): SwarmDefinition {
 		throw new Error(`Invalid mode '${String(modeValue)}'. Must be one of: ${[...VALID_MODES].join(", ")}`);
 	}
 	const mode = modeValue as SwarmMode;
+	const agentExecution = parseAgentExecution(swarm.agent_execution);
 	const workspaceIsolation =
 		parseIsolationMode(firstDefined(swarm.isolation, swarm.workspace_isolation), "swarm.isolation") ?? "none";
 	const inheritHistory =
@@ -434,6 +451,7 @@ export function parseSwarm(content: string): SwarmDefinition {
 		workspaceIsolation,
 		inheritHistory,
 		mode,
+		agentExecution,
 		targetCount,
 		failurePolicy,
 		maxConcurrency,
@@ -532,6 +550,7 @@ export function serializeSwarmDefinition(definition: SwarmDefinition): Record<st
 		task: definition.task,
 		workspaceIsolation: definition.workspaceIsolation,
 		inheritHistory: definition.inheritHistory,
+		agentExecution: definition.agentExecution,
 		mode: definition.mode,
 		targetCount: definition.targetCount,
 		failurePolicy: definition.failurePolicy,

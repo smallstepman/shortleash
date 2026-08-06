@@ -247,6 +247,7 @@ async function runPipeline(options: CliOptions): Promise<void> {
 	console.log(`Reading: ${options.input}`);
 	console.log(`Shortleash: ${def.name}`);
 	console.log(`Mode: ${def.mode}`);
+	console.log(`Agent execution: ${def.agentExecution}`);
 	console.log(`Failure policy: ${def.failurePolicy}`);
 	console.log(`Target count: ${def.targetCount}`);
 	console.log(`Agents: ${[...def.agents.keys()].join(", ")}`);

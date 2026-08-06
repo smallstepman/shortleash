@@ -20,21 +20,30 @@ export interface BeadsIssueRecord {
 	metadata?: unknown;
 }
 
-export function extractBeadsIssueRecord(data: unknown, issueId: string): BeadsIssueRecord | undefined {
+export function extractBeadsIssueRecords(data: unknown): BeadsIssueRecord[] {
 	const candidates = Array.isArray(data) ? data : [data];
-	const raw = candidates.find(
-		(candidate): candidate is Record<string, unknown> =>
-			isRecord(candidate) && typeof candidate.id === "string" && candidate.id === issueId,
-	);
-	if (!raw) return undefined;
-	return {
-		id: issueId,
-		title: typeof raw.title === "string" ? raw.title : undefined,
-		description: typeof raw.description === "string" ? raw.description : undefined,
-		type: typeof raw.type === "string" ? raw.type : typeof raw.issue_type === "string" ? raw.issue_type : undefined,
-		status: typeof raw.status === "string" ? raw.status : undefined,
-		metadata: raw.metadata,
-	};
+	return candidates.flatMap(candidate => {
+		if (!isRecord(candidate) || typeof candidate.id !== "string" || candidate.id.length === 0) return [];
+		return [
+			{
+				id: candidate.id,
+				title: typeof candidate.title === "string" ? candidate.title : undefined,
+				description: typeof candidate.description === "string" ? candidate.description : undefined,
+				type:
+					typeof candidate.type === "string"
+						? candidate.type
+						: typeof candidate.issue_type === "string"
+							? candidate.issue_type
+							: undefined,
+				status: typeof candidate.status === "string" ? candidate.status : undefined,
+				metadata: candidate.metadata,
+			},
+		];
+	});
+}
+
+export function extractBeadsIssueRecord(data: unknown, issueId: string): BeadsIssueRecord | undefined {
+	return extractBeadsIssueRecords(data).find(candidate => candidate.id === issueId);
 }
 
 export interface BeadsDependencyInput {

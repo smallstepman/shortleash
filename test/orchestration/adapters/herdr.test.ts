@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import {
 	CliHerdrControl,
 	type HerdrCallOptions,
@@ -17,6 +17,7 @@ import { PipelineController } from "../../../src/orchestration/execution/pipelin
 import { StateTracker } from "../../../src/orchestration/execution/state";
 
 class FakeHerdrControl implements HerdrControl {
+	readonly prompts: string[] = [];
 	readonly calls: string[] = [];
 	startAgentFailures = 0;
 	#nextPane = 1;
@@ -58,8 +59,8 @@ class FakeHerdrControl implements HerdrControl {
 
 	async promptAgent(target: string, prompt: string): Promise<void> {
 		this.calls.push(`agent:prompt:${target}:${prompt.split("\n", 1)[0]}`);
+		this.prompts.push(prompt);
 	}
-
 	async readAgent(target: string): Promise<string> {
 		this.calls.push(`agent:read:${target}`);
 		return `completed:${target}`;
@@ -194,6 +195,30 @@ describe("Herdr CLI adapter", () => {
 });
 
 describe("Herdr swarm session", () => {
+	it("keeps configured subagents in the current OMP session", async () => {
+		const definition = parseSwarm(`
+swarm:
+  name: current-subagents
+  workspace: .
+  agent_execution: subagents
+  agents:
+    worker:
+      role: worker
+      task: complete the task
+`);
+		const control = new FakeHerdrControl();
+
+		const session = await HerdrSwarmSession.open({
+			client: control,
+			definition,
+			definitionInput: "current-subagents.yaml",
+			workspace,
+			cwd: workspace,
+		});
+
+		expect(session).toBeUndefined();
+		expect(control.calls).toEqual([]);
+	});
 	it("bounds Herdr agent names to the CLI contract", async () => {
 		const definition = parseSwarm(`
 swarm:
@@ -231,6 +256,66 @@ swarm:
 		expect(agentName?.length).toBeLessThanOrEqual(32);
 	});
 
+	it("passes only readable parent text to worker prompts", async () => {
+		const definition = parseSwarm(`
+swarm:
+  name: herdr-parent-context
+  workspace: .
+  agents:
+    worker:
+      role: worker
+      task: report the assigned result
+`);
+		const waves = buildExecutionWaves(buildDependencyGraph(definition));
+		const stateTracker = new StateTracker(workspace, definition.name);
+		await stateTracker.init([...definition.agents.keys()], definition.targetCount, definition.mode);
+		const control = new FakeHerdrControl();
+		const session = await HerdrSwarmSession.open({
+			client: control,
+			definition,
+			definitionInput: "herdr-parent-context.yaml",
+			workspace,
+			cwd: workspace,
+		});
+		expect(session).toBeDefined();
+
+		const parentMessages = [
+			{ role: "user", content: "Parent objective", timestamp: 1 },
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "private reasoning", thinkingSignature: "opaque-signature" },
+					{ type: "text", text: "Parent found the relevant objective." },
+					{ type: "toolCall", id: "call-1", name: "beads", arguments: { op: "ready" } },
+				],
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: "beads",
+				content: [{ type: "text", text: "[]" }],
+				isError: false,
+				timestamp: 3,
+			},
+		] as unknown as AgentMessage[];
+
+		const result = await new PipelineController(definition, waves, stateTracker).run({
+			workspace,
+			parentMessages,
+			agentRunner: session!.runAgent,
+		});
+		await session!.dispose();
+
+		const prompt = control.prompts[0] ?? "";
+		expect(prompt).toContain("user: Parent objective");
+		expect(prompt).toContain("assistant: Parent found the relevant objective.");
+		expect(prompt).not.toContain("private reasoning");
+		expect(prompt).not.toContain("opaque-signature");
+		expect(prompt).not.toContain("toolResult");
+		expect(prompt).not.toContain("[]");
+		expect(result.status).toBe("completed");
+	});
+
 	it("keeps one dashboard tab and rotates panes by DAG wave", async () => {
 		const definition = diamondDefinition();
 		const waves = buildExecutionWaves(buildDependencyGraph(definition));
@@ -249,6 +334,8 @@ swarm:
 		expect(session).toBeDefined();
 		expect(control.calls.slice(0, 3)).toEqual(["probe", "tab:create:shortleash: herdr-diamond", "pane:list"]);
 		expect(control.calls[3]).toMatch(/^pane:run:/);
+		expect(control.calls[3]).toContain("/src/cli.ts");
+		expect(control.calls[3]).not.toContain("/src/orchestration/cli.ts");
 
 		const result = await new PipelineController(definition, waves, stateTracker).run({
 			workspace,

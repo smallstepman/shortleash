@@ -88,6 +88,7 @@ export function formatSwarmPlan(plan: SwarmPlan): string[] {
 		`Definition: ${plan.definitionPath}`,
 		`Workspace: ${plan.workspace}`,
 		`Mode: ${plan.definition.mode}`,
+		`Agent execution: ${plan.definition.agentExecution}`,
 		`Failure policy: ${plan.definition.failurePolicy}`,
 		`Target count: ${plan.definition.targetCount}`,
 		`Max concurrency: ${plan.definition.maxConcurrency ?? "unlimited"}`,

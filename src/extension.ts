@@ -7,11 +7,11 @@
  * Usage: Add this extension's directory to your extensions config,
  * then use /shortleash in any oh-my-pi session.
  */
-
 import * as fs from "node:fs/promises";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, SingleResult } from "@oh-my-pi/pi-coding-agent";
 import { formatDuration } from "@oh-my-pi/pi-utils";
+import { BeadsClient, extractBeadsIssueRecords } from "./beads/client";
 import { createBeadsTool } from "./beads/tool";
 import {
 	createSwarmBeadsProjector,
@@ -20,6 +20,7 @@ import {
 } from "./orchestration/adapters/beads";
 import { createHerdrSwarmSession } from "./orchestration/adapters/herdr";
 import { createSwarmRunManifest } from "./orchestration/definition/manifest";
+import { hasSwarmMetadata, validateSwarmMetadata } from "./orchestration/definition/metadata";
 import { formatSwarmPlan, resolveSwarmPlan, type SwarmPlan } from "./orchestration/definition/plan";
 import { fingerprintSwarmDefinition, type SwarmDefinition } from "./orchestration/definition/schema";
 import { type ClaimedSwarmResult, runClaimedSwarm } from "./orchestration/execution/auto";
@@ -73,15 +74,16 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 	pi.setLabel("Shortleash Orchestrator");
 	pi.registerTool(
 		createBeadsTool({
-			onClaim: async ({ issueId, ctx, signal }) =>
+			onClaim: async ({ issueId, ctx, signal, restart }) =>
 				runClaimedSwarm(issueId, {
 					ctx,
 					settings: pi.pi.settings,
 					signal,
+					restart,
 					logger: pi.logger,
-					directRunner: async plan => {
+					directRunner: async (plan, runOptions) => {
 						if (signal?.aborted) throw signal.reason;
-						await startDirectSwarm(plan, ctx, pi, { resume: false, restart: false }, directRuns);
+						await startDirectSwarm(plan, ctx, pi, { resume: false, restart: runOptions.restart }, directRuns);
 						return {
 							status: "not-started",
 							swarmName: plan.definition.name,
@@ -92,13 +94,12 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 		}),
 	);
 
+	const getArgumentCompletions = createShortleashArgumentCompletions(pi);
 	pi.registerCommand("shortleash", {
 		description: "Run a multi-agent swarm pipeline from JSON/YAML definitions",
-		getArgumentCompletions: prefix => {
-			const subcommands = ["run", "plan", "inspect", "status", "evaluate", "reconcile", "help"];
-			if (!prefix) return subcommands.map(s => ({ label: s, value: s }));
-			return subcommands.filter(s => s.startsWith(prefix)).map(s => ({ label: s, value: s }));
-		},
+		// The host's TUI awaits Promise-returning completions, while the extension
+		// declaration currently exposes the older synchronous callback type.
+		getArgumentCompletions: getArgumentCompletions as unknown as ShortleashArgumentCompletion,
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			const parts = args.trim().split(/\s+/);
 			const subcommand = parts[0] ?? "help";
@@ -166,6 +167,112 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 			}
 		},
 	});
+}
+type ShortleashCompletionItem = {
+	value: string;
+	label: string;
+	description?: string;
+};
+
+type ShortleashArgumentCompletion = (prefix: string) => ShortleashCompletionItem[] | null;
+type AsyncShortleashArgumentCompletion = (prefix: string) => Promise<ShortleashCompletionItem[] | null>;
+
+const SHORTLEASH_SUBCOMMANDS = ["run", "plan", "inspect", "status", "evaluate", "reconcile", "help"] as const;
+const SHORTLEASH_INPUT_SUBCOMMANDS = ["run", "plan", "inspect", "evaluate", "reconcile"] as const;
+
+interface ShortleashBeadCompletion {
+	id: string;
+	title: string;
+	name: string;
+}
+
+function createShortleashArgumentCompletions(pi: ExtensionAPI): AsyncShortleashArgumentCompletion {
+	const beads = new BeadsClient({
+		run: async (args, _cwd, signal) => {
+			const result = await pi.exec("bd", [...args], { signal, timeout: 2_000 });
+			if (result.code !== 0) {
+				const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
+				throw new Error(`bd ${args.join(" ")} failed: ${detail}`);
+			}
+			return result.stdout;
+		},
+	});
+	let cached: { expiresAt: number; items: ShortleashBeadCompletion[] } | undefined;
+	let pending: Promise<ShortleashBeadCompletion[]> | undefined;
+
+	const loadBeads = async (): Promise<ShortleashBeadCompletion[]> => {
+		const now = Date.now();
+		if (cached && cached.expiresAt > now) return cached.items;
+		if (pending) return pending;
+		pending = beads
+			.list({ status: "open" }, process.cwd())
+			.then(result =>
+				extractBeadsIssueRecords(result.data).flatMap(issue => {
+					if (issue.status !== "open" || !hasSwarmMetadata(issue.metadata)) return [];
+					try {
+						const definition = validateSwarmMetadata(issue.metadata);
+						return [
+							{
+								id: issue.id,
+								title: issue.title?.trim() || issue.id,
+								name: definition.name,
+							},
+						];
+					} catch {
+						return [];
+					}
+				}),
+			)
+			.then(items => {
+				cached = { expiresAt: Date.now() + 2_000, items };
+				return items;
+			})
+			.finally(() => {
+				pending = undefined;
+			});
+		return pending!;
+	};
+
+	return async prefix => {
+		const subcommandSuggestions = SHORTLEASH_SUBCOMMANDS.filter(command => command.startsWith(prefix)).map(
+			command => ({
+				label: command,
+				value: command,
+			}),
+		);
+		const trimmed = prefix.trim();
+		const inputMatch = /^(run|plan|inspect|evaluate|reconcile)\s+(.*)$/.exec(prefix);
+		const action = inputMatch?.[1] as (typeof SHORTLEASH_INPUT_SUBCOMMANDS)[number] | undefined;
+		const query = inputMatch?.[2].trim().toLowerCase() ?? "";
+
+		if (!action && trimmed.length > 0) return subcommandSuggestions;
+
+		try {
+			const items = await loadBeads();
+			if (!action) {
+				return [
+					...subcommandSuggestions,
+					...items.map(item => ({
+						label: `${item.id} — ${item.title}`,
+						value: `run issue://${item.id}`,
+						description: `Run Shortleash '${item.name}'`,
+					})),
+				];
+			}
+			return items
+				.filter(item => {
+					const searchable = `${item.id} ${item.title} ${item.name}`.toLowerCase();
+					return query.length === 0 || searchable.includes(query);
+				})
+				.map(item => ({
+					label: `${item.id} — ${item.title}`,
+					value: `${action} issue://${item.id}`,
+					description: `${action[0].toUpperCase()}${action.slice(1)} Shortleash '${item.name}'`,
+				}));
+		} catch {
+			return action ? null : subcommandSuggestions;
+		}
+	};
 }
 
 const MAX_DIRECT_FINALIZE_ATTEMPTS = 3;
@@ -548,7 +655,7 @@ async function handleRun(
 		runAbortController.abort(new Error("Cancelled from the Shortleash dashboard."));
 	});
 
-	// 9. Run pipeline in Herdr when available; the in-process runner remains the fallback.
+	// 9. Run declared agents through configured backend; Herdr falls back in-process when unavailable.
 	const controller = new PipelineController(def, waves, stateTracker);
 	let result: PipelineResult;
 	let herdrSession: Awaited<ReturnType<typeof createHerdrSwarmSession>>;
@@ -556,13 +663,16 @@ async function handleRun(
 		.getBranch()
 		.flatMap(entry => (entry.type === "message" ? [entry.message] : []));
 	try {
-		herdrSession = await createHerdrSwarmSession({
-			definition: def,
-			definitionInput: definitionPath,
-			workspace,
-			cwd: ctx.cwd,
-			logger: pi.logger,
-		});
+		herdrSession =
+			def.agentExecution === "herdr"
+				? await createHerdrSwarmSession({
+						definition: def,
+						definitionInput: definitionPath,
+						workspace,
+						cwd: ctx.cwd,
+						logger: pi.logger,
+					})
+				: undefined;
 		result = await controller.run({
 			workspace,
 			cwd: ctx.cwd,

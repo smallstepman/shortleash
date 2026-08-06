@@ -279,7 +279,12 @@ export class HerdrSwarmSession {
 	}
 
 	static async open(options: HerdrSwarmSessionOptions): Promise<HerdrSwarmSession | undefined> {
-		if (process.env.OMP_SWARM_HERDR?.toLowerCase() === "off") return undefined;
+		if (options.definition.agentExecution === "subagents") {
+			options.logger?.debug("Using the in-process subagent executor by configuration.", {
+				swarm: options.definition.name,
+			});
+			return undefined;
+		}
 		if (usesUnsupportedIsolation(options.definition)) {
 			options.logger?.warn("Skipping Herdr swarm execution because worktree isolation is configured.", {
 				swarm: options.definition.name,
@@ -517,15 +522,9 @@ async function recordHerdrResult(
 function buildAgentPrompt(agent: SwarmAgent, parentMessages?: AgentMessage[]): string {
 	const parts = [`You are the '${agent.name}' worker in a swarm.`, `Role: ${agent.role}.`];
 	if (agent.extraContext) parts.push(`Additional context:\n${agent.extraContext}`);
-	if (parentMessages && parentMessages.length > 0) {
-		const history = parentMessages
-			.slice(-8)
-			.map(message => {
-				const content = "content" in message ? message.content : message;
-				return `${message.role}: ${formatMessageContent(content)}`;
-			})
-			.join("\n");
-		parts.push(`Relevant parent session context:\n${history}`);
+	const history = parentMessages?.flatMap(parentMessageText) ?? [];
+	if (history.length > 0) {
+		parts.push(`Relevant parent session context:\n${history.slice(-8).join("\n")}`);
 	}
 	parts.push(
 		`Work in the assigned swarm workspace and complete this task:\n${agent.task}`,
@@ -534,19 +533,28 @@ function buildAgentPrompt(agent: SwarmAgent, parentMessages?: AgentMessage[]): s
 	return parts.join("\n\n");
 }
 
-function formatMessageContent(content: unknown): string {
+function parentMessageText(message: AgentMessage): string[] {
+	const record = asRecord(message);
+	if (!record || (record.role !== "user" && record.role !== "assistant" && record.role !== "developer")) return [];
+	const text = textContent(record.content);
+	return text.trim() ? [`${record.role}: ${text.trim()}`] : [];
+}
+
+function textContent(content: unknown): string {
 	if (typeof content === "string") return content;
-	try {
-		return JSON.stringify(content);
-	} catch {
-		return String(content);
-	}
+	if (!Array.isArray(content)) return "";
+	return content
+		.flatMap(block => {
+			const record = asRecord(block);
+			return record?.type === "text" && typeof record.text === "string" ? [record.text] : [];
+		})
+		.join("\n");
 }
 
 function buildDashboardCommand(definitionInput: string): string {
-	const script = path.resolve(import.meta.dir, "../cli.ts");
-	// A compiled OMP host's process.execPath is the OMP binary, not Bun. Passing
-	// the TypeScript path to it makes OMP treat that path as its input instead
+	const script = path.resolve(import.meta.dir, "../../cli.ts");
+	// A compiled OMP host's process.execPath is the OMP executable, not Bun. Passing
+	// a TypeScript path to it makes OMP treat that path as its input instead
 	// of launching the dashboard CLI.
 	const executable = isCompiledBinary() ? ($which("bun") ?? "bun") : process.execPath;
 	return [executable, script, "dashboard", definitionInput].map(shellQuote).join(" ");

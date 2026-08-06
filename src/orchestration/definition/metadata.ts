@@ -65,7 +65,7 @@ export const SWARM_DEFINITION_JSON_SCHEMA = {
 		workspace: { type: "string", minLength: 1 },
 		task: { type: "string", minLength: 1 },
 		mode: { type: "string", enum: ["pipeline", "parallel", "sequential"] },
-		target_count: { type: "integer", minimum: 1 },
+		agent_execution: { type: "string", enum: ["herdr", "subagents"] },
 		failure_policy: { type: "string", enum: ["fail_fast", "continue", "skip_dependents"] },
 		max_concurrency: { type: "integer", minimum: 1 },
 		agent_timeout_ms: { type: "integer", minimum: 1 },
@@ -152,7 +152,7 @@ function validateRawSwarmConfig(value: Record<string, unknown>, field: string): 
 	assertOptionalPositiveInteger(value.agent_timeout_ms, `${field}.agent_timeout_ms`);
 	assertOptionalPositiveInteger(value.token_budget, `${field}.token_budget`);
 	assertOptionalPositiveInteger(value.request_budget, `${field}.request_budget`);
-	assertString(value.model, `${field}.model`);
+	assertOptionalEnum(value.agent_execution, `${field}.agent_execution`, ["herdr", "subagents"]);
 	assertOptionalIsolation(value.isolation, `${field}.isolation`);
 	assertOptionalIsolation(value.workspace_isolation, `${field}.workspace_isolation`);
 	assertOptionalHistory(value.inherit_history, `${field}.inherit_history`);

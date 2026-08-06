@@ -465,6 +465,43 @@ describe("beads OMP tool", () => {
 			swarm: { status: "completed", swarmName: "claim-swarm" },
 		});
 	});
+	it("passes an explicit restart request to the configured claim handler", async () => {
+		let restart: boolean | undefined;
+		const tool = createBeadsTool({
+			client: new BeadsClient({
+				run: async args => {
+					if (args[0] === "show") {
+						return JSON.stringify({
+							data: [
+								{
+									id: "bd-restart",
+									title: "Restarted work",
+									type: "task",
+									metadata: validSwarmMetadata("restart-swarm"),
+								},
+							],
+						});
+					}
+					return JSON.stringify({ data: { id: "bd-restart", status: "in_progress" } });
+				},
+			}),
+			onClaim: async input => {
+				restart = input.restart;
+				return { status: "completed", swarmName: "restart-swarm", iterations: 1, errors: [] };
+			},
+		});
+		const ctx = { cwd: process.cwd() } as Parameters<typeof tool.execute>[4];
+
+		await tool.execute(
+			"claim-restart",
+			{ op: "claim", issue_id: "bd-restart", restart: true } as BeadsToolParams,
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(restart).toBe(true);
+	});
 
 	it("claims an unconfigured Bead without invoking the swarm handler", async () => {
 		let delegated = 0;

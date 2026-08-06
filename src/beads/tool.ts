@@ -13,6 +13,10 @@ const beadsToolSchema = z
 	.object({
 		op: z.enum(["show", "list", "ready", "create", "update", "claim", "close", "dependencies"]),
 		issue_id: z.string().min(1).describe("one issue ID").optional(),
+		restart: z
+			.boolean()
+			.describe("restart an existing persisted Shortleash run instead of returning its terminal status")
+			.optional(),
 		issue_ids: z.array(z.string()).describe("one or more issue IDs").optional(),
 		dependency_issue_id: z.string().min(1).describe("issue ID that issue_id depends on").optional(),
 		dependency_action: z.enum(["add", "remove", "list"]).describe("dependency edge operation").optional(),
@@ -82,6 +86,7 @@ export interface BeadsClaimHandlerInput {
 	bead: BeadsIssueRecord;
 	ctx: ExtensionContext;
 	signal?: AbortSignal;
+	restart?: boolean;
 }
 
 export type BeadsClaimHandler = (input: BeadsClaimHandlerInput) => Promise<BeadsClaimDelegation>;
@@ -104,7 +109,7 @@ const BEADS_TOOL_DESCRIPTION = [
 	"- `ready`: find unblocked work; supports `parent_id`, `type`, `priority` (0-4), `assignee`, `labels`, `limit`, and `unassigned`.",
 	"- `create`: create a meaningful issue; `title` is required. `type` defaults to `task`, and `feature`, `bug`, and `task` issues must include valid `metadata.shortleash` configuration. Use `parent_id` for hierarchy, `acceptance` for completion criteria, `notes` for durable context, `defer_until` for deferral, and `deps` for prerequisites—the new issue will depend on each listed issue.",
 	"- `update`: change an existing issue; requires `issue_id` and at least one field to change: `title`, `type`, `description`, `acceptance`, `parent_id`, `status`, `priority`, `assignee`, `labels`, `notes`, `append_notes`, `defer_until`, `metadata`, or `metadata_file`. Feature, bug, and task updates must carry valid `metadata.shortleash`; updates without an explicit type validate the existing issue before mutation. Use `append_notes` when preserving existing notes matters.",
-	"- `claim`: claim ownership of one issue with `issue_id`; if its metadata contains valid `shortleash`, the extension automatically delegates the claimed Bead to the swarm executor and reports the persisted run status.",
+	"- `claim`: claim ownership of one issue with `issue_id`; if its metadata contains valid `shortleash`, the extension automatically delegates the claimed Bead to the swarm executor and reports the persisted run status. Set `restart: true` to intentionally execute an existing persisted run again; without it, repeated claims are idempotent and report the terminal status.",
 	"- `close`: close one issue with `issue_id`; include a durable `reason` explaining the externally meaningful completion.",
 	"- `dependencies`: inspect or change graph edges. `dependency_action` is `list`, `add`, or `remove`. `list` requires `issue_id` or `issue_ids` and accepts `direction` (`down` by default = dependencies, or `up` = dependents) plus optional `dependency_type`; `add` and `remove` require exactly one `issue_id` (the dependent issue) and one `dependency_issue_id` (the issue it depends on); `add` defaults to `blocks`. `remove` rejects missing or reversed edges instead of reporting a false success.",
 	"",
@@ -113,7 +118,7 @@ const BEADS_TOOL_DESCRIPTION = [
 	"- `priority` must be an integer from 0 through 4, and `limit` must be at least 1.",
 	"- `deps` is an array of `{ issue_id, type? }`; each entry means the new issue depends on that issue. Use explicit types such as `blocks` or `discovered-from` when needed.",
 	"- `metadata` must be a JSON object. `metadata` and `metadata_file` are mutually exclusive. `metadata_file` must be a workspace-relative JSON file, never an absolute path.",
-	"- `metadata.shortleash` is the standard raw swarm definition: `name` and `workspace` are required; omit `agents` to execute directly in the current OMP session, or define agents with `role` and `task`.",
+	"- `metadata.shortleash` is the standard raw swarm definition: `name` and `workspace` are required; omit `agents` to execute directly in the current OMP session, or define agents with `role` and `task`. For a previously completed or failed run, use `restart: true` on `claim` when a new attempt is intentional.",
 	"- Unknown fields and invalid operation-specific combinations are rejected; correct the structured input rather than retrying a raw command.",
 	"",
 	"Typical flow: `ready` -> `show` -> `claim` -> Shortleash delegation when configured -> inspect results -> `update` durable notes -> `close` after genuine completion.",
@@ -332,6 +337,7 @@ async function executeBeadsOperation(
 					bead,
 					ctx,
 					signal,
+					restart: params.restart,
 				});
 				return { result, delegation };
 			} catch (error) {

@@ -43,7 +43,7 @@ omp-shortleash path/to/swarm.yaml --resume
 omp-shortleash path/to/swarm.yaml --restart
 ```
 
-`--resume` requires the persisted definition hash, agent set, mode, workspace, and target count to remain compatible. Successful results already recorded for the unfinished iteration are reused; only missing or failed work runs again. A valid stale `run.lock` is recoverable only with `--resume` or `--restart`; a corrupt lock is never removed automatically.
+`--resume` requires the persisted definition hash, agent set, mode, agent execution backend, workspace, and target count to remain compatible. Successful results already recorded for the unfinished iteration are reused; only missing or failed work runs again. A valid stale `run.lock` is recoverable only with `--resume` or `--restart`; a corrupt lock is never removed automatically.
 
 Run evaluators against the persisted results without starting agents:
 
@@ -74,20 +74,30 @@ Then:
 /shortleash reconcile obligated-gty
 /shortleash help
 ```
+When the current Beads workspace has open issues with valid `metadata.shortleash`, `/shortleash ` also suggests runnable `run issue://<id>` entries. After choosing `run`, `plan`, `inspect`, `evaluate`, or `reconcile`, the suggestions filter by the Bead ID, title, or Shortleash name.
+
 While `/shortleash run` or a metadata-backed Beads claim is active, the TUI shows a compact widget below the editor. Press `Alt+W` to open a colorized, animated right-anchored dashboard overlay; nodes are arranged by dependency depth, edges show the DAG, and up to five recent native tool actions are shown for each active worker. Press `c` or `Ctrl+C` in the dashboard to cancel the active run; `q`, `Esc`, or `Alt+W` only closes the dashboard and restores the editor.
 
 ### Herdr-backed Beads runs
 
-When a Beads issue contains valid `metadata.shortleash`, the Beads `claim` operation delegates to the persisted Shortleash runner. Definitions with declared `agents` use Herdr when available:
+When a Beads issue contains valid `metadata.shortleash`, the Beads `claim` operation delegates to the persisted Shortleash runner. Definitions with declared `agents` use the configured `agent_execution` backend; `herdr` is the default:
 
 
+With `agent_execution: herdr`:
 1. The tab is labeled `shortleash: <name>` and its initial pane runs the live swarm dashboard.
 2. The current DAG wave gets one visible agent pane per runnable agent.
 3. Agents in a wave execute concurrently; each pane is closed in its `finally` path when that agent completes or fails.
 4. The next wave opens only after the previous wave's panes have closed, so a diamond `1-3-1` run reuses one tab while rotating `1`, then `3`, then `1` agent panes.
 5. The tab is closed after the persisted run reaches a terminal state.
 
+Set `agent_execution: subagents` to skip Herdr entirely and run declared agents through the existing OMP subagent executor in the current session. The compact in-session widget and dashboard remain available, but no Herdr tab or panes are created. The standalone CLI always uses the in-process executor because it has no TUI/Herdr session.
+
 When `metadata.shortleash.agents` is omitted, claim execution stays in the current OMP session instead of creating a Herdr tab or subagent. The extension still creates the durable run state, evaluates the configured policies at the start and completion boundaries, records the result, and reports completion or corrective feedback through the same session.
+The claim operation is idempotent for an existing persisted run. To intentionally execute a completed, failed, or aborted run again, pass `restart: true` in the Beads tool claim input:
+
+```json
+{ "op": "claim", "issue_id": "scratchpad-3jv", "restart": true }
+```
 
 Start Herdr from an interactive terminal so its server inherits the PATH needed by spawned agents:
 
@@ -96,7 +106,7 @@ herdr
 herdr status
 ```
 
-The default worker kind is `omp`; set `OMP_SWARM_HERDR_AGENT` to another Herdr-supported kind when required. Set `OMP_SWARM_HERDR=off` to force the existing in-process executor. Worktree-isolated swarms also use the in-process executor because a single visible tab cannot safely represent independent worktree lifecycles. If Herdr is missing, stopped, or returns an invalid pane response, the extension closes any tab it created and falls back without losing the durable Shortleash state.
+The default worker kind is `omp`; set `OMP_SWARM_HERDR_AGENT` to another Herdr-supported kind when required. Set `OMP_SWARM_HERDR=off` to force the existing in-process executor even for `agent_execution: herdr`. Worktree-isolated swarms also use the in-process executor because a single visible tab cannot safely represent independent worktree lifecycles. If Herdr is missing, stopped, or returns an invalid pane response, the extension closes any tab it created and falls back without losing the durable Shortleash state.
 
 The integration delegates argv-safe CLI execution to the `@andrewjacop/pi-herdr` dependency. Its current package surface has no runtime export, so the adapter isolates the source-path import; no private OMP APIs are used. OMP workers submit prompts without relying on Herdr's agent state transition (the installed OMP binary can remain `idle` while work runs); the adapter polls the pane's active-work marker before reading the result.
 
@@ -134,6 +144,7 @@ swarm:
   workspace: ./workspace # Working directory (relative to the definition file location)
   task: "Complete this objective directly." # Optional; used when agents is omitted.
   mode: pipeline # pipeline | parallel | sequential
+  agent_execution: herdr # herdr | subagents; default: herdr for declared agents
   target_count: 10 # Iterations (pipeline mode only, default: 1)
   model: claude-opus-4-6 # Default model for agents without an override (optional)
   workspace_isolation: none # none | worktree; default: none
@@ -181,6 +192,7 @@ The equivalent JSON form uses the same snake_case field names:
 		"name": "my-pipeline",
 		"workspace": "./workspace",
 		"mode": "pipeline",
+		"agent_execution": "herdr",
 		"target_count": 10,
 		"model": "claude-opus-4-6",
 		"agents": {
@@ -216,6 +228,7 @@ A Beads metadata object must contain the standard swarm definition under `metada
 		"name": "streaming-retry",
 		"workspace": ".",
 		"mode": "sequential",
+		"agent_execution": "herdr",
 		"agents": {
 			"backend": {
 				"role": "backend",

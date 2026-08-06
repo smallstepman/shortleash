@@ -63,8 +63,8 @@ export type { SwarmPlan } from "./orchestration/definition/plan";
 export { formatSwarmPlan, resolveSwarmPlan } from "./orchestration/definition/plan";
 export type {
 	SwarmAgent,
+	SwarmAgentExecution,
 	SwarmDefinition,
-	SwarmFailurePolicy,
 	SwarmIsolationMode,
 	SwarmMode,
 	SwarmPolicyParam,

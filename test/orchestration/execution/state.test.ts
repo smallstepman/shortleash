@@ -64,6 +64,33 @@ describe("Swarm state lifecycle", () => {
 		).rejects.toThrow("definition hash changed");
 		await incompatibleTracker.releaseRunLock();
 	});
+	it("requires an explicit restart to replace terminal persisted state", async () => {
+		const tracker = new StateTracker(workspace, "restart");
+		await tracker.init(["worker"], 1, "sequential", {
+			definitionHash: "hash-a",
+			workspace,
+		});
+		await tracker.recordResult("worker", 0, 0, result());
+		await tracker.updatePipeline({ status: "completed", nextIteration: 1, completedAt: Date.now() });
+
+		const repeated = new StateTracker(workspace, "restart");
+		await expect(
+			repeated.init(["worker"], 1, "sequential", {
+				definitionHash: "hash-a",
+				workspace,
+			}),
+		).rejects.toThrow("Use --resume to continue it or --restart to run it again");
+
+		const restarted = new StateTracker(workspace, "restart");
+		const init = await restarted.init(["worker"], 1, "sequential", {
+			definitionHash: "hash-b",
+			workspace,
+			restart: true,
+		});
+		expect(init.resumed).toBe(false);
+		expect(restarted.state.status).toBe("running");
+		expect(restarted.state.results.worker).toEqual([]);
+	});
 	it("requires persisted state for resume and refuses corrupt run locks", async () => {
 		const missing = new StateTracker(workspace, "missing-resume");
 		await expect(
