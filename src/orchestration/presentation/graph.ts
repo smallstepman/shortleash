@@ -1,5 +1,14 @@
 import { truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import { type Canvas, canvas, formatCanvas, line, STYLE_THIN_ROUNDED, strokeRect, textLine } from "@thi.ng/text-canvas";
+import {
+	type Canvas,
+	canvas,
+	formatCanvas,
+	line,
+	STYLE_THIN_ROUNDED,
+	setAt,
+	strokeRect,
+	textLine,
+} from "@thi.ng/text-canvas";
 import { type Graph, graphConnect, type LayoutResult, shapeRect, sugiyama, tweakShape } from "d3-dag";
 import type { SwarmDefinition } from "../definition/schema";
 import type { SwarmState } from "../execution/state";
@@ -8,6 +17,11 @@ const GRAPH_NODE_HEIGHT = 3;
 const MIN_GRAPH_NODE_WIDTH = 8;
 const MAX_GRAPH_NODE_WIDTH = 24;
 const DENSE_GRAPH_THRESHOLD = 8;
+const DENSE_GRAPH_GAP_Y = 3;
+const DIRECTION_NORTH = 1;
+const DIRECTION_SOUTH = 2;
+const DIRECTION_WEST = 4;
+const DIRECTION_EAST = 8;
 
 const GRAPH_FORMATS = {
 	borderMuted: 1,
@@ -33,11 +47,17 @@ type PositionedNode = {
 	y: number;
 	width: number;
 };
+type DenseConnectorCell = {
+	directions: number;
+	format: GraphColor;
+	priority: number;
+	order: number;
+};
 
 /**
  * Render the execution dependency graph with a d3-dag layout and a text canvas.
- * Dense graphs keep the same nodes and paths but use lighter connector glyphs
- * to reduce visual noise. The canvas owns clipping and primitive drawing.
+ * Dense graphs use merged rounded orthogonal connectors so shared paths remain
+ * continuous and active links remain visually distinct.
  */
 export function renderExecutionGraph(
 	definition: SwarmDefinition,
@@ -47,6 +67,7 @@ export function renderExecutionGraph(
 	animationFrame: number,
 ): string[] {
 	const names = orderedAgentNames(definition);
+	const denseGraph = names.length >= DENSE_GRAPH_THRESHOLD;
 	if (names.length === 0) return [theme.fg("dim", truncateToWidth("  (no agents)", Math.max(1, Math.floor(width))))];
 
 	const links: [string, string][] = [];
@@ -90,7 +111,7 @@ export function renderExecutionGraph(
 		const nodeSize: readonly [number, number] = [nodeWidth, GRAPH_NODE_HEIGHT];
 		const layout = sugiyama()
 			.nodeSize(nodeSize)
-			.gap([Math.max(1, Math.min(6, Math.floor(width / 12))), 2])
+			.gap([Math.max(1, Math.min(6, Math.floor(width / 12))), denseGraph ? DENSE_GRAPH_GAP_Y : 2])
 			.tweaks([tweakShape(nodeSize, shapeRect)]);
 		const layoutGraph = layout as unknown as (input: Graph<string, [string, string]>) => LayoutResult;
 		const dimensions = layoutGraph(graph);
@@ -118,22 +139,40 @@ export function renderExecutionGraph(
 			});
 		}
 
-		for (const link of graph.links()) {
-			const fromStatus = state.agents[link.source.data]?.status ?? "pending";
-			const toStatus = state.agents[link.target.data]?.status ?? "pending";
-			const color = edgeColor(fromStatus, toStatus, animationFrame);
-			for (let index = 1; index < link.points.length; index++) {
-				const from = toCanvasPoint(link.points[index - 1] as GraphPoint);
-				const to = toCanvasPoint(link.points[index] as GraphPoint);
-				line(
-					surface,
-					from[0],
-					from[1],
-					to[0],
-					to[1],
-					connectorGlyph(from, to, names.length >= DENSE_GRAPH_THRESHOLD),
-					GRAPH_FORMATS[color],
+		if (denseGraph) {
+			const connectorCells = new Map<number, DenseConnectorCell>();
+			let edgeOrder = 0;
+			for (const link of graph.links()) {
+				if (link.source.data === link.target.data) continue;
+				const source = positionedNodes.get(link.source.data);
+				const target = positionedNodes.get(link.target.data);
+				if (!source || !target) continue;
+				const fromStatus = state.agents[link.source.data]?.status ?? "pending";
+				const toStatus = state.agents[link.target.data]?.status ?? "pending";
+				const edgeId = `${link.source.data}\0${link.target.data}`;
+				const color = edgeColor(fromStatus, toStatus, animationFrame, edgeId);
+				addDenseConnector(
+					connectorCells,
+					denseConnectorRoute(source, target),
+					color,
+					isActiveEdge(fromStatus, toStatus) ? 2 : 1,
+					edgeOrder++,
+					surface.width,
+					surface.height,
 				);
+			}
+			renderDenseConnectors(surface, connectorCells);
+		} else {
+			for (const link of graph.links()) {
+				const fromStatus = state.agents[link.source.data]?.status ?? "pending";
+				const toStatus = state.agents[link.target.data]?.status ?? "pending";
+				const edgeId = `${link.source.data}\0${link.target.data}`;
+				const color = edgeColor(fromStatus, toStatus, animationFrame, edgeId);
+				for (let index = 1; index < link.points.length; index++) {
+					const from = toCanvasPoint(link.points[index - 1] as GraphPoint);
+					const to = toCanvasPoint(link.points[index] as GraphPoint);
+					line(surface, from[0], from[1], to[0], to[1], connectorGlyph(from, to), GRAPH_FORMATS[color]);
+				}
 			}
 		}
 
@@ -171,12 +210,12 @@ function graphNodeWidth(names: readonly string[], width: number): number {
 }
 
 function renderNode(surface: Canvas, node: PositionedNode, animationFrame: number): void {
-	const color = nodeColor(node.status, animationFrame);
+	const color = nodeColor(node.status, animationFrame, node.name);
 	const format = GRAPH_FORMATS[color];
 	const x = node.x - Math.floor(node.width / 2);
 	const y = node.y - Math.floor(GRAPH_NODE_HEIGHT / 2);
 	strokeRect(surface, x, y, node.width, GRAPH_NODE_HEIGHT, format);
-	const label = centerGraphText(`${statusGlyph(node.status, animationFrame)} ${node.name}`, node.width - 2);
+	const label = centerGraphText(`${statusGlyph(node.status, animationFrame, node.name)} ${node.name}`, node.width - 2);
 	textLine(surface, x + 1, y + 1, label, format);
 }
 
@@ -213,17 +252,155 @@ function graphColor(format: number): GraphColor | undefined {
 	return undefined;
 }
 
-function connectorGlyph(from: GraphPoint, to: GraphPoint, simplify: boolean): string {
-	if (!simplify) {
-		if (Math.abs(to[0] - from[0]) < 0.5) return "│";
-		return to[0] > from[0] ? "╲" : "╱";
-	}
-	if (Math.abs(to[1] - from[1]) < 0.5) return "┄";
-	if (Math.abs(to[0] - from[0]) < 0.5) return "┊";
-	return "·";
+function connectorGlyph(from: GraphPoint, to: GraphPoint): string {
+	if (Math.abs(to[0] - from[0]) < 0.5) return "│";
+	return to[0] > from[0] ? "╲" : "╱";
 }
 
-function nodeColor(status: string, animationFrame: number): GraphColor {
+function denseConnectorRoute(source: PositionedNode, target: PositionedNode): GraphPoint[] {
+	const sourceY = source.y + Math.floor(GRAPH_NODE_HEIGHT / 2) + 1;
+	const targetY = target.y - Math.floor(GRAPH_NODE_HEIGHT / 2) - 1;
+	if (source.x === target.x)
+		return [
+			[source.x, sourceY],
+			[target.x, targetY],
+		];
+	const laneY = Math.round((sourceY + targetY) / 2);
+	return [
+		[source.x, sourceY],
+		[source.x, laneY],
+		[target.x, laneY],
+		[target.x, targetY],
+	];
+}
+
+function addDenseConnector(
+	cells: Map<number, DenseConnectorCell>,
+	route: readonly GraphPoint[],
+	format: GraphColor,
+	priority: number,
+	order: number,
+	width: number,
+	height: number,
+): void {
+	for (let index = 1; index < route.length; index++) {
+		addDenseSegment(cells, route[index - 1], route[index], format, priority, order, width, height);
+	}
+}
+
+function addDenseSegment(
+	cells: Map<number, DenseConnectorCell>,
+	from: GraphPoint,
+	to: GraphPoint,
+	format: GraphColor,
+	priority: number,
+	order: number,
+	width: number,
+	height: number,
+): void {
+	const dx = Math.sign(to[0] - from[0]);
+	const dy = Math.sign(to[1] - from[1]);
+	if (dx !== 0 && dy !== 0) {
+		const bend: GraphPoint = [from[0], to[1]];
+		addDenseSegment(cells, from, bend, format, priority, order, width, height);
+		addDenseSegment(cells, bend, to, format, priority, order, width, height);
+		return;
+	}
+	const length = Math.max(Math.abs(to[0] - from[0]), Math.abs(to[1] - from[1]));
+	if (length === 0) return;
+	for (let step = 0; step <= length; step++) {
+		const x = Math.round(from[0] + dx * step);
+		const y = Math.round(from[1] + dy * step);
+		if (x < 0 || y < 0 || x >= width || y >= height) continue;
+		let directions = 0;
+		if (step > 0)
+			directions |= dx > 0 ? DIRECTION_WEST : dx < 0 ? DIRECTION_EAST : dy > 0 ? DIRECTION_NORTH : DIRECTION_SOUTH;
+		if (step < length)
+			directions |= dx > 0 ? DIRECTION_EAST : dx < 0 ? DIRECTION_WEST : dy > 0 ? DIRECTION_SOUTH : DIRECTION_NORTH;
+		addDenseCell(cells, x + y * width, directions, format, priority, order);
+	}
+}
+
+function addDenseCell(
+	cells: Map<number, DenseConnectorCell>,
+	index: number,
+	directions: number,
+	format: GraphColor,
+	priority: number,
+	order: number,
+): void {
+	const existing = cells.get(index);
+	if (!existing) {
+		cells.set(index, { directions, format, priority, order });
+		return;
+	}
+	existing.directions |= directions;
+	if (priority > existing.priority || (priority === existing.priority && order > existing.order)) {
+		existing.format = format;
+		existing.priority = priority;
+		existing.order = order;
+	}
+}
+
+function renderDenseConnectors(surface: Canvas, cells: ReadonlyMap<number, DenseConnectorCell>): void {
+	for (const [index, cell] of cells) {
+		const x = index % surface.width;
+		const y = Math.floor(index / surface.width);
+		const glyph = denseConnectorGlyph(cell.directions);
+		if (glyph) setAt(surface, x, y, glyph, GRAPH_FORMATS[cell.format]);
+	}
+}
+
+function denseConnectorGlyph(directions: number): string {
+	switch (directions) {
+		case DIRECTION_NORTH:
+		case DIRECTION_SOUTH:
+		case DIRECTION_NORTH | DIRECTION_SOUTH:
+			return "│";
+		case DIRECTION_WEST:
+		case DIRECTION_EAST:
+		case DIRECTION_WEST | DIRECTION_EAST:
+			return "─";
+		case DIRECTION_NORTH | DIRECTION_EAST:
+			return "╰";
+		case DIRECTION_NORTH | DIRECTION_WEST:
+			return "╯";
+		case DIRECTION_SOUTH | DIRECTION_EAST:
+			return "╭";
+		case DIRECTION_SOUTH | DIRECTION_WEST:
+			return "╮";
+		case DIRECTION_NORTH | DIRECTION_SOUTH | DIRECTION_EAST:
+			return "├";
+		case DIRECTION_NORTH | DIRECTION_SOUTH | DIRECTION_WEST:
+			return "┤";
+		case DIRECTION_WEST | DIRECTION_EAST | DIRECTION_SOUTH:
+			return "┬";
+		case DIRECTION_WEST | DIRECTION_EAST | DIRECTION_NORTH:
+			return "┴";
+		case DIRECTION_NORTH | DIRECTION_SOUTH | DIRECTION_WEST | DIRECTION_EAST:
+			return "┼";
+		default:
+			return "";
+	}
+}
+
+function isActiveEdge(fromStatus: string, toStatus: string): boolean {
+	return fromStatus === "running" || toStatus === "running";
+}
+
+function animationOffset(identity: string): number {
+	let hash = 2166136261;
+	for (let index = 0; index < identity.length; index++) {
+		hash = Math.imul(hash ^ identity.charCodeAt(index), 16777619);
+	}
+	return hash >>> 0;
+}
+
+function animationTick(animationFrame: number, identity: string): number {
+	return animationFrame + (animationOffset(identity) % 10);
+}
+
+function nodeColor(status: string, animationFrame: number, identity = ""): GraphColor {
 	switch (status) {
 		case "completed":
 			return "success";
@@ -231,7 +408,7 @@ function nodeColor(status: string, animationFrame: number): GraphColor {
 		case "aborted":
 			return "error";
 		case "running":
-			return animationFrame % 2 === 0 ? "warning" : "accent";
+			return activeAnimationColor(animationFrame, `node:${identity}`);
 		case "waiting":
 			return "accent";
 		default:
@@ -239,15 +416,21 @@ function nodeColor(status: string, animationFrame: number): GraphColor {
 	}
 }
 
-function edgeColor(fromStatus: string, toStatus: string, animationFrame: number): GraphColor {
+function edgeColor(fromStatus: string, toStatus: string, animationFrame: number, identity: string): GraphColor {
 	if (fromStatus === "failed" || toStatus === "failed" || fromStatus === "aborted" || toStatus === "aborted") {
 		return "error";
 	}
-	if (fromStatus === "running" || toStatus === "running") {
-		return animationFrame % 2 === 0 ? "warning" : "accent";
+	if (isActiveEdge(fromStatus, toStatus)) {
+		return activeAnimationColor(animationFrame, `edge:${identity}`);
 	}
 	if (fromStatus === "completed" && toStatus === "completed") return "success";
 	return "borderMuted";
+}
+
+function activeAnimationColor(animationFrame: number, identity: string): GraphColor {
+	const offset = animationOffset(identity);
+	const cadence = 2 + (offset % 3);
+	return Math.floor((animationFrame + offset) / cadence) % 2 === 0 ? "warning" : "accent";
 }
 
 function centerGraphText(text: string, width: number): string {
@@ -257,12 +440,16 @@ function centerGraphText(text: string, width: number): string {
 	return `${" ".repeat(left)}${clipped}${" ".repeat(remaining - left)}`;
 }
 
-function statusGlyph(status: string | undefined, animationFrame = 0): string {
+function statusGlyph(status: string | undefined, animationFrame = 0, identity = ""): string {
 	switch (status) {
 		case "completed":
 			return "✓";
 		case "running":
-			return ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][Math.abs(animationFrame) % 10] ?? "⠋";
+			return (
+				["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][
+					animationTick(animationFrame, `node:${identity}`) % 10
+				] ?? "⠋"
+			);
 		case "failed":
 			return "×";
 		case "waiting":

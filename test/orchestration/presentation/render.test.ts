@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { parseSwarm } from "../../../src/orchestration/definition/schema";
 import type { SwarmState } from "../../../src/orchestration/execution/state";
+import { renderExecutionGraph } from "../../../src/orchestration/presentation/graph";
 import { renderSwarmDashboardLines } from "../../../src/orchestration/presentation/render";
 
 const identityTheme = {
@@ -107,7 +108,7 @@ swarm:
 		expect(frame0).toContain("╲");
 		expect(frame0).not.toEqual(frame1);
 	});
-	it("uses lighter connectors for dense graphs without changing node layout", () => {
+	it("uses rounded merged connectors and independent dense animation", () => {
 		const definition = parseSwarm(`
 swarm:
   name: dense
@@ -167,13 +168,39 @@ swarm:
 		const rendered = graph.join("\n");
 		expect(rendered).toContain("╭");
 		expect(rendered).toContain("╰");
+		expect(rendered).toContain("─");
+		expect(rendered).toContain("┼");
 		expect(rendered).not.toContain("Dense dependency map");
 		expect(rendered).not.toContain("←");
 		expect(rendered).not.toContain("╱");
 		expect(rendered).not.toContain("╲");
-		expect(rendered).toMatch(/[·┄┊]/);
 		for (const name of definition.agentOrder) expect(rendered).toContain(name);
 		for (const line of graph) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+		const activeState: SwarmState = {
+			...state,
+			agents: {
+				...state.agents,
+				root02: { ...state.agents.root02, status: "running" },
+			},
+		};
+		const colorTheme = {
+			fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+		};
+		const activeFrame1 = renderExecutionGraph(definition, activeState, 60, colorTheme, 1).join("\n");
+		const activeFrame2 = renderExecutionGraph(definition, activeState, 60, colorTheme, 2).join("\n");
+		expect(activeFrame1).toContain("<warning>");
+		expect(activeFrame1).toContain("<accent>");
+		expect(activeFrame1).not.toEqual(activeFrame2);
+		const perNodeState: SwarmState = {
+			...activeState,
+			agents: {
+				...activeState.agents,
+				root03: { ...activeState.agents.root03, status: "running" },
+			},
+		};
+		const perNodeFrame = renderExecutionGraph(definition, perNodeState, 60, identityTheme, 0).join("\n");
+		const ticks = [...perNodeFrame.matchAll(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g)].map(match => match[0]);
+		expect(new Set(ticks).size).toBeGreaterThan(1);
 	});
 
 	it("keeps library-backed graph output deterministic and bounded at narrow widths", () => {
@@ -303,6 +330,8 @@ swarm:
 			},
 		});
 		expect(calls.some(([color, text]) => color === "success" && text.includes("done"))).toBe(true);
-		expect(calls.some(([color, text]) => color === "warning" && text.includes("active"))).toBe(true);
+		expect(
+			calls.some(([color, text]) => (color === "warning" || color === "accent") && text.includes("active")),
+		).toBe(true);
 	});
 });
