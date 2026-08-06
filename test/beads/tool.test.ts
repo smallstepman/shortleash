@@ -310,6 +310,77 @@ describe("beads OMP tool", () => {
 		).rejects.toThrow("show requires issue_id or issue_ids");
 	});
 
+	it("routes every read and mutation operation through the typed client boundary", async () => {
+		const calls: string[][] = [];
+		const tool = createBeadsTool({
+			client: new BeadsClient({
+				run: async args => {
+					calls.push([...args]);
+					if (args[0] === "show") return JSON.stringify({ data: [{ id: "bd-1", type: "chore" }] });
+					return JSON.stringify({ data: { id: "bd-created", status: "open" } });
+				},
+			}),
+		});
+		const ctx = { cwd: process.cwd() } as Parameters<typeof tool.execute>[4];
+		const execute = (params: BeadsToolParams) => tool.execute("operation", params, undefined, undefined, ctx);
+
+		await execute({ op: "show", issue_ids: ["bd-1", "bd-2"] } as BeadsToolParams);
+		await execute({ op: "list", parent_id: "bd-parent", ready: true, no_parent: true, limit: 2 } as BeadsToolParams);
+		await execute({ op: "ready", unassigned: true } as BeadsToolParams);
+		await execute({ op: "create", title: "A chore", type: "chore" } as BeadsToolParams);
+		await execute({ op: "update", issue_id: "bd-1", type: "chore", notes: "recorded" } as BeadsToolParams);
+		await execute({
+			op: "dependencies",
+			dependency_action: "list",
+			issue_id: "bd-1",
+			direction: "up",
+			dependency_type: "blocks",
+		} as BeadsToolParams);
+
+		expect(calls).toEqual([
+			["show", "bd-1", "bd-2", "--json"],
+			["list", "--parent", "bd-parent", "--limit", "2", "--ready", "--no-parent", "--json"],
+			["ready", "--unassigned", "--json"],
+			["create", "--title", "A chore", "--type", "chore", "--json"],
+			["update", "bd-1", "--type", "chore", "--notes", "recorded", "--json"],
+			["dep", "list", "bd-1", "--direction", "up", "--type", "blocks", "--json"],
+		]);
+	});
+
+	it("rejects operation-specific omissions before invoking Beads", async () => {
+		let invoked = false;
+		const tool = createBeadsTool({
+			client: new BeadsClient({
+				run: async _args => {
+					invoked = true;
+					return JSON.stringify({ data: [] });
+				},
+			}),
+		});
+		const ctx = { cwd: process.cwd() } as Parameters<typeof tool.execute>[4];
+		const execute = (params: BeadsToolParams) => tool.execute("invalid-operation", params, undefined, undefined, ctx);
+
+		await expect(execute({ op: "create", title: "   ", type: "chore" } as BeadsToolParams)).rejects.toThrow(
+			"create requires title",
+		);
+		await expect(execute({ op: "update", issue_id: "bd-1" } as BeadsToolParams)).rejects.toThrow(
+			"update requires at least one field",
+		);
+		await expect(execute({ op: "dependencies", dependency_action: "list" } as BeadsToolParams)).rejects.toThrow(
+			"dependency list requires issue_id or issue_ids",
+		);
+		await expect(
+			execute({
+				op: "dependencies",
+				dependency_action: "add",
+				issue_ids: ["bd-1", "bd-2"],
+				dependency_issue_id: "bd-3",
+			} as BeadsToolParams),
+		).rejects.toThrow("accepts exactly one issue_id");
+
+		expect(invoked).toBe(false);
+	});
+
 	it("routes a JavaScript-eval-shaped nested metadata call without JSON escaping", async () => {
 		let receivedMetadata: Record<string, unknown> | undefined;
 		const tool = createBeadsTool({

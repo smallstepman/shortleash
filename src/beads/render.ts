@@ -55,6 +55,31 @@ const PRIORITY_LABELS: Record<number, string> = {
 	4: "Backlog",
 };
 
+function isBeadsToolDetails(value: unknown): value is BeadsToolDetails {
+	if (!isRecord(value) || !isBeadsOperation(value.operation)) return false;
+	return (
+		Array.isArray(value.args) &&
+		value.args.every(argument => typeof argument === "string") &&
+		Object.hasOwn(value, "data")
+	);
+}
+
+function isBeadsOperation(value: unknown): value is BeadsToolParams["op"] {
+	switch (value) {
+		case "show":
+		case "list":
+		case "ready":
+		case "create":
+		case "update":
+		case "claim":
+		case "close":
+		case "dependencies":
+			return true;
+		default:
+			return false;
+	}
+}
+
 export function renderBeadsCall(args: BeadsToolParams, options: ToolRenderResultOptions, theme: Theme): Component {
 	if (!options.isPartial) return EMPTY_COMPONENT;
 	const header = renderHeader(args, theme, "pending", options.spinnerFrame);
@@ -67,9 +92,9 @@ export function renderBeadsResult(
 	theme: Theme,
 	args?: BeadsToolParams,
 ): Component {
-	const details = isRecord(result.details) ? (result.details as BeadsToolDetails) : undefined;
+	const details = isBeadsToolDetails(result.details) ? result.details : undefined;
 	const operation: BeadsToolParams["op"] = details?.operation ?? args?.op ?? "show";
-	const effectiveArgs = args ?? ({ op: operation } as BeadsToolParams);
+	const effectiveArgs = args ?? { op: operation };
 	const state: FrameState = result.isError ? "error" : "success";
 	const header = renderHeader(effectiveArgs, theme, state);
 

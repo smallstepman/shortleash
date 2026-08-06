@@ -13,8 +13,7 @@
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["bun", "assets"],
-    "typeRoots": ["./node_modules/@types", "./oh-my-pi/types"]
+    "types": ["bun"]
   },
   "include": ["src"]
 }

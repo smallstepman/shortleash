@@ -86,4 +86,19 @@ describe("Beads renderer", () => {
 		expect(lines.join("\n")).toContain("1 more issue");
 		expect(lines.join("\n")).toContain("Ctrl+O");
 	});
+	it("ignores malformed host details and falls back to the validated call arguments", async () => {
+		const theme = await darkTheme();
+		const lines = renderBeadsResult(
+			{
+				content: [{ type: "text", text: "raw JSON" }],
+				details: { operation: "not-a-beads-operation", args: "invalid", data: { id: "bd-1" } },
+			} as unknown as Parameters<typeof renderBeadsResult>[0],
+			{ expanded: false, isPartial: false },
+			theme,
+			{ op: "list" },
+		).render(100);
+
+		expect(lines.join("\n")).toContain("Beads list");
+		expect(lines.join("\n")).toContain("Completed · no data");
+	});
 });

@@ -14,13 +14,13 @@ import * as fs from "node:fs/promises";
 import { discoverAuthStorage, type SingleResult } from "@oh-my-pi/pi-coding-agent";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { createSwarmBeadsProjector } from "./swarm/beads";
-import { createSwarmRunManifest } from "./swarm/manifest";
-import { PipelineController } from "./swarm/pipeline";
-import { formatSwarmPlan, resolveSwarmPlan, type SwarmPlan } from "./swarm/plan";
-import { renderSwarmDashboardPanelLines, renderSwarmProgress } from "./swarm/render";
-import { fingerprintSwarmDefinition } from "./swarm/schema";
-import { StateTracker } from "./swarm/state";
+import { createSwarmBeadsProjector } from "./orchestration/adapters/beads";
+import { createSwarmRunManifest } from "./orchestration/definition/manifest";
+import { formatSwarmPlan, resolveSwarmPlan, type SwarmPlan } from "./orchestration/definition/plan";
+import { fingerprintSwarmDefinition } from "./orchestration/definition/schema";
+import { PipelineController } from "./orchestration/execution/pipeline";
+import { StateTracker } from "./orchestration/execution/state";
+import { renderSwarmDashboardPanelLines, renderSwarmProgress } from "./orchestration/presentation/render";
 
 interface CliOptions {
 	command: "run" | "plan" | "status" | "evaluate" | "reconcile" | "dashboard";

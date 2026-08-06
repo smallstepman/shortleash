@@ -683,17 +683,33 @@ Precedence: `agents.<name>.model` → `swarm.model` → session default. Check `
 ## Architecture
 
 ```
-src/extension.ts      TUI entry point (registers /shortleash command)
-src/cli.ts   Standalone runner (no TUI, no timeout)
-src/swarm/
-  schema.ts           JSON/YAML parsing + validation
-  plan.ts             Input resolution, plugin loading, and executable plan
-  dag.ts              Dependency graph, cycle detection, topological sort
-  executor.ts         Spawns agents via oh-my-pi's runSubprocess
-  pipeline.ts         Iteration loop, policy boundaries, and Beads projection
-  state.ts            Atomic filesystem state, run lock, result history, and recovery
-  beads.ts            Real `bd` input/projection adapter and drift reconciliation
-  plugins.ts          Code-defined policy registry and structured evaluations
-  manifest.ts         Durable run manifest and definition fingerprint
-  render.ts           Progress display formatting
+src/extension.ts                 TUI entry point (registers /shortleash command)
+src/cli.ts                       Standalone runner (no TUI, no timeout)
+src/orchestration/
+  definition/
+    schema.ts                    JSON/YAML parsing, normalization, and validation
+    metadata.ts                  Beads metadata schema and validation
+    plan.ts                      Input resolution, plugin loading, and executable plan
+    manifest.ts                   Durable run manifest and definition fingerprint
+  execution/
+    dag.ts                       Dependency graph, cycle detection, topological sort
+    executor.ts                  Spawns agents via oh-my-pi's runSubprocess
+    pipeline.ts                  Iteration loop, policy boundaries, and projection
+    state.ts                     Atomic filesystem state, run lock, history, and recovery
+    auto.ts                      Claimed-Bead run lifecycle
+    concurrency.ts               Bounded asynchronous work
+    signals.ts                   Cancellation and timeout scopes
+  policy/
+    plugins.ts                   Code-defined policy registry and structured evaluations
+    policy-types.ts              Shared policy result contracts
+  adapters/
+    beads.ts                     Workflow input, lifecycle projection, and drift reconciliation
+    herdr.ts                     Herdr tab and agent-pane execution adapter
+  presentation/
+    dashboard.ts                 Live TUI widget and dashboard lifecycle
+    render.ts                    Progress and execution-graph rendering
+src/beads/
+  client.ts                      Bounded argv/JSON Beads client
+  tool.ts                        Discoverable OMP Beads tool
+  render.ts                      Beads tool call/result cards
 ```

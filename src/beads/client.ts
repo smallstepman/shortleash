@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { hasSwarmMetadata, normalizeMetadataObject, validateSwarmMetadata } from "../swarm/metadata";
+import { hasSwarmMetadata, normalizeMetadataObject, validateSwarmMetadata } from "../orchestration/definition/metadata";
 export type BeadsCommandRunner = (args: readonly string[], cwd: string, signal?: AbortSignal) => Promise<string>;
 
 export interface BeadsCommandResult {

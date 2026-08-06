@@ -1,4 +1,4 @@
-import { defineSwarmPlugin } from "../../src/swarm/plugins";
+import { defineSwarmPlugin } from "../../src/orchestration/policy/plugins";
 
 export default defineSwarmPlugin({
 	name: "fixture",

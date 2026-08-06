@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { StateTracker } from "../src/swarm/state";
+import { StateTracker } from "../src/orchestration/execution/state";
 
 const cliPath = path.resolve(import.meta.dir, "../src/cli.ts");
 

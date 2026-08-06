@@ -1,13 +1,7 @@
 import type { ExtensionContext, ToolApprovalDecision, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import { z } from "@oh-my-pi/pi-coding-agent";
-import { hasSwarmMetadata, validateSwarmMetadata } from "../swarm/metadata";
-import {
-	BeadsClient,
-	type BeadsCommandResult,
-	type BeadsDependencyOperationInput,
-	type BeadsIssueRecord,
-	extractBeadsIssueRecord,
-} from "./client";
+import { hasSwarmMetadata, validateSwarmMetadata } from "../orchestration/definition/metadata";
+import { BeadsClient, type BeadsCommandResult, type BeadsIssueRecord, extractBeadsIssueRecord } from "./client";
 import { renderBeadsCall, renderBeadsResult } from "./render";
 
 const dependencySchema = z.object({
@@ -168,43 +162,65 @@ function approvalFor(raw: unknown): ToolApprovalDecision {
 	return "write";
 }
 
-function parseBeadsParams(raw: unknown): BeadsToolParams {
+type ValidatedDependencyParams =
+	| (BeadsToolParams & {
+			op: "dependencies";
+			dependencyAction: "list";
+			issueIds: string[];
+			dependencyIssueId?: undefined;
+	  })
+	| (BeadsToolParams & {
+			op: "dependencies";
+			dependencyAction: "add" | "remove";
+			issueIds: string[];
+			issueId: string;
+			dependencyIssueId: string;
+	  });
+
+type ValidatedBeadsParams =
+	| (BeadsToolParams & { op: "show"; issueIds: string[] })
+	| (BeadsToolParams & { op: "create"; title: string })
+	| (BeadsToolParams & { op: "update"; issueId: string })
+	| (BeadsToolParams & { op: "claim"; issueId: string })
+	| (BeadsToolParams & { op: "close"; issueId: string })
+	| ValidatedDependencyParams
+	| (BeadsToolParams & { op: "list" | "ready" });
+
+function parseBeadsParams(raw: unknown): ValidatedBeadsParams {
 	const parsed = beadsToolSchema.safeParse(raw);
 	if (!parsed.success) throw new Error(`Invalid beads operation: ${parsed.error.message}`);
 
 	const params = parsed.data;
+	const { op: _op, ...base } = params;
 	switch (params.op) {
 		case "show":
-			requireIssueIds(params, "show requires issue_id or issue_ids");
-			break;
+			return { ...base, op: "show", issueIds: requireIssueIds(params, "show requires issue_id or issue_ids") };
 		case "list":
 			validatePriority(params.priority);
 			validateLimit(params.limit);
-			break;
+			return { ...base, op: "list" };
+		case "ready":
+			validatePriority(params.priority);
+			validateLimit(params.limit);
+			return { ...base, op: "ready" };
 		case "create":
-			requireNonEmpty(params.title, "create requires title");
 			validatePriority(params.priority);
 			validateMetadata(params);
 			validateCreateSwarmRequirement(params);
-			break;
+			return { ...base, op: "create", title: requireNonEmpty(params.title, "create requires title") };
 		case "update":
-			requireNonEmpty(params.issue_id, "update requires issue_id");
 			if (!hasUpdateField(params)) throw new Error("update requires at least one field to change");
 			validatePriority(params.priority);
 			validateMetadata(params);
 			validateUpdateSwarmRequirement(params);
-			break;
+			return { ...base, op: "update", issueId: requireNonEmpty(params.issue_id, "update requires issue_id") };
 		case "claim":
-			requireNonEmpty(params.issue_id, "claim requires issue_id");
-			break;
+			return { ...base, op: "claim", issueId: requireNonEmpty(params.issue_id, "claim requires issue_id") };
 		case "close":
-			requireNonEmpty(params.issue_id, "close requires issue_id");
-			break;
+			return { ...base, op: "close", issueId: requireNonEmpty(params.issue_id, "close requires issue_id") };
 		case "dependencies":
-			validateDependencyOperation(params);
-			break;
+			return { ...base, op: "dependencies", ...validateDependencyOperation(params) };
 	}
-	return params;
 }
 
 type BeadsExecutionOutcome = {
@@ -214,14 +230,14 @@ type BeadsExecutionOutcome = {
 
 async function executeBeadsOperation(
 	client: BeadsClient,
-	params: BeadsToolParams,
+	params: ValidatedBeadsParams,
 	ctx: ExtensionContext,
 	signal: AbortSignal | undefined,
 	onClaim: BeadsClaimHandler | undefined,
 ): Promise<BeadsExecutionOutcome> {
 	switch (params.op) {
 		case "show":
-			return { result: await client.show({ ids: normalizeIssueIds(params) }, ctx.cwd, signal) };
+			return { result: await client.show({ ids: params.issueIds }, ctx.cwd, signal) };
 		case "list":
 			return {
 				result: await client.list(
@@ -261,7 +277,7 @@ async function executeBeadsOperation(
 			return {
 				result: await client.create(
 					{
-						title: params.title as string,
+						title: params.title,
 						type: params.type,
 						description: params.description,
 						acceptance: params.acceptance,
@@ -283,7 +299,7 @@ async function executeBeadsOperation(
 			return {
 				result: await client.update(
 					{
-						issueId: params.issue_id as string,
+						issueId: params.issueId,
 						title: params.title,
 						type: params.type,
 						description: params.description,
@@ -304,10 +320,10 @@ async function executeBeadsOperation(
 				),
 			};
 		case "claim": {
-			const result = await client.claim({ issueId: params.issue_id as string }, ctx.cwd, signal);
+			const result = await client.claim({ issueId: params.issueId }, ctx.cwd, signal);
 			if (!onClaim) return { result };
-			const shown = await client.show({ ids: [params.issue_id as string] }, ctx.cwd, signal);
-			const bead = extractBeadsIssueRecord(shown.data, params.issue_id as string);
+			const shown = await client.show({ ids: [params.issueId] }, ctx.cwd, signal);
+			const bead = extractBeadsIssueRecord(shown.data, params.issueId);
 			if (!bead || !hasSwarmMetadata(bead.metadata)) return { result };
 			try {
 				validateSwarmMetadata(bead.metadata);
@@ -330,15 +346,15 @@ async function executeBeadsOperation(
 		}
 		case "close":
 			return {
-				result: await client.close({ issueId: params.issue_id as string, reason: params.reason }, ctx.cwd, signal),
+				result: await client.close({ issueId: params.issueId, reason: params.reason }, ctx.cwd, signal),
 			};
 		case "dependencies":
 			return {
 				result: await client.dependencies(
 					{
-						action: params.dependency_action as BeadsDependencyOperationInput["action"],
-						issueIds: normalizeIssueIds(params),
-						dependencyIssueId: params.dependency_issue_id,
+						action: params.dependencyAction,
+						issueIds: params.issueIds,
+						dependencyIssueId: params.dependencyIssueId,
 						type: params.dependency_type,
 						direction: params.direction,
 					},
@@ -347,14 +363,19 @@ async function executeBeadsOperation(
 				),
 			};
 	}
-	throw new Error(`Unsupported beads operation: ${String(params.op)}`);
 }
 
-function validateDependencyOperation(params: BeadsToolParams): void {
+function validateDependencyOperation(
+	params: BeadsToolParams,
+):
+	| { dependencyAction: "list"; issueIds: string[]; dependencyIssueId?: undefined }
+	| { dependencyAction: "add" | "remove"; issueIds: string[]; issueId: string; dependencyIssueId: string } {
 	if (!params.dependency_action) throw new Error("dependencies requires dependency_action");
 	if (params.dependency_action === "list") {
-		requireIssueIds(params, "dependency list requires issue_id or issue_ids");
-		return;
+		return {
+			dependencyAction: "list",
+			issueIds: requireIssueIds(params, "dependency list requires issue_id or issue_ids"),
+		};
 	}
 	if (!params.issue_id || params.issue_ids) {
 		if (params.issue_ids && params.issue_ids.length > 0) {
@@ -362,20 +383,32 @@ function validateDependencyOperation(params: BeadsToolParams): void {
 		}
 		throw new Error("dependency add/remove requires issue_id");
 	}
-	if (!params.dependency_issue_id) throw new Error("dependency add/remove requires dependency_issue_id");
+	return {
+		dependencyAction: params.dependency_action,
+		issueIds: [requireNonEmpty(params.issue_id, "dependency add/remove requires issue_id")],
+		issueId: requireNonEmpty(params.issue_id, "dependency add/remove requires issue_id"),
+		dependencyIssueId: requireNonEmpty(
+			params.dependency_issue_id,
+			"dependency add/remove requires dependency_issue_id",
+		),
+	};
 }
 
 function normalizeIssueIds(params: BeadsToolParams): string[] {
-	return params.issue_ids && params.issue_ids.length > 0 ? params.issue_ids : params.issue_id ? [params.issue_id] : [];
+	return (
+		params.issue_ids && params.issue_ids.length > 0 ? params.issue_ids : params.issue_id ? [params.issue_id] : []
+	).map(id => id.trim());
 }
 
-function requireIssueIds(params: BeadsToolParams, message: string): void {
+function requireIssueIds(params: BeadsToolParams, message: string): string[] {
 	const ids = normalizeIssueIds(params);
-	if (ids.length === 0 || ids.some(id => typeof id !== "string" || id.trim().length === 0)) throw new Error(message);
+	if (ids.length === 0 || ids.some(id => id.length === 0)) throw new Error(message);
+	return ids;
 }
 
-function requireNonEmpty(value: string | undefined, message: string): void {
+function requireNonEmpty(value: string | undefined, message: string): string {
 	if (typeof value !== "string" || value.trim().length === 0) throw new Error(message);
+	return value.trim();
 }
 
 function validateLimit(value: number | undefined): void {

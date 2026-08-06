@@ -13,23 +13,27 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, SingleResult } from "@oh-my-pi/pi-coding-agent";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import { createBeadsTool } from "./beads/tool";
-import { type ClaimedSwarmResult, runClaimedSwarm } from "./swarm/auto";
-import { createSwarmBeadsProjector, type SwarmBeadsProjector, type SwarmProjectionEvent } from "./swarm/beads";
-import { attachSwarmDashboard } from "./swarm/dashboard";
-import { executeDirectSwarm } from "./swarm/executor";
-import { createHerdrSwarmSession } from "./swarm/herdr";
-import { createSwarmRunManifest } from "./swarm/manifest";
-import { PipelineController, type PipelineResult } from "./swarm/pipeline";
-import { formatSwarmPlan, resolveSwarmPlan, type SwarmPlan } from "./swarm/plan";
+import {
+	createSwarmBeadsProjector,
+	type SwarmBeadsProjector,
+	type SwarmProjectionEvent,
+} from "./orchestration/adapters/beads";
+import { createHerdrSwarmSession } from "./orchestration/adapters/herdr";
+import { createSwarmRunManifest } from "./orchestration/definition/manifest";
+import { formatSwarmPlan, resolveSwarmPlan, type SwarmPlan } from "./orchestration/definition/plan";
+import { fingerprintSwarmDefinition, type SwarmDefinition } from "./orchestration/definition/schema";
+import { type ClaimedSwarmResult, runClaimedSwarm } from "./orchestration/execution/auto";
+import { executeDirectSwarm } from "./orchestration/execution/executor";
+import { PipelineController, type PipelineResult } from "./orchestration/execution/pipeline";
+import { StateTracker } from "./orchestration/execution/state";
 import type {
 	SwarmPolicyContext,
 	SwarmPolicyDecision,
 	SwarmPolicyObservations,
 	SwarmPolicyRegistry,
-} from "./swarm/plugins";
-import { renderSwarmProgress } from "./swarm/render";
-import { fingerprintSwarmDefinition, type SwarmDefinition } from "./swarm/schema";
-import { StateTracker } from "./swarm/state";
+} from "./orchestration/policy/plugins";
+import { attachSwarmDashboard } from "./orchestration/presentation/dashboard";
+import { renderSwarmProgress } from "./orchestration/presentation/render";
 
 interface DirectSwarmRun {
 	sessionId: string;
@@ -421,14 +425,13 @@ function directResult(run: DirectSwarmRun, messages: AgentMessage[]): SingleResu
 }
 
 function agentMessageText(message: AgentMessage): string {
-	const content = (message as unknown as { content?: unknown }).content;
+	const content = isRecord(message) ? message.content : undefined;
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 	return content
 		.map(block => {
-			if (!block || typeof block !== "object") return "";
-			const value = block as { type?: unknown; text?: unknown };
-			return value.type === "text" && typeof value.text === "string" ? value.text : "";
+			if (!isRecord(block)) return "";
+			return block.type === "text" && typeof block.text === "string" ? block.text : "";
 		})
 		.filter(Boolean)
 		.join("\n");
@@ -761,6 +764,9 @@ async function handleReconcile(
 // Helpers
 
 // ============================================================================
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 function assertDefinitionHash(actual: string, expected: string, name: string): void {
 	if (actual !== "unknown" && actual !== "legacy" && actual !== expected) {
 		throw new Error(`Persisted state for shortleash '${name}' was created from a different definition.`);
@@ -769,7 +775,7 @@ function assertDefinitionHash(actual: string, expected: string, name: string): v
 
 function buildSummaryMessage(
 	def: SwarmDefinition,
-	result: { status: string; iterations: number; errors: string[] },
+	result: Pick<PipelineResult, "status" | "iterations" | "errors">,
 	stateTracker: StateTracker,
 	workspace: string,
 ): string {
