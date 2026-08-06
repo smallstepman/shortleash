@@ -14,12 +14,12 @@ bd version 1.1.2 (dev)
 OMP is integrated through its documented extension API:
 
 - `omp --extension <file>` loads a TypeScript/JavaScript extension factory.
-- `pi.registerTool(...)` registers model-callable operations. Tool parameters use `pi.zod`.
-- Workflow tools set the real `loadMode: "essential"` option so they appear in OMP's active tool list; the default extension-tool mode is discoverable rather than top-level.
-- `pi.on(...)` exposes lifecycle and tool events.
+- `pi.on(...)` exposes lifecycle and tool events, including `tool_call`, `tool_result`, and `user_bash`.
 - `pi.appendEntry(customType, data)` persists extension data in the OMP session JSONL.
 - `ctx.sessionManager.getBranch()` is the documented reconstruction hook for extension state.
 - OMP's file-backed sessions support `--continue`, `--resume`, and `--session-dir`.
+
+The Shortleash extension deliberately does not register a model-facing Beads tool. Agents and operators use the normal `bd` CLI through Bash. The extension hooks direct `bd show` calls, validates `metadata.shortleash` on create/update, and starts a persisted Shortleash run after a successful `bd update <id> --claim`. Complex shell commands are left untouched; internal workflow adapters continue to use bounded argv calls directly.
 
 Beads is integrated through its actual CLI because this repository has no Beads TypeScript package:
 

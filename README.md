@@ -76,11 +76,13 @@ Then:
 ```
 When the current Beads workspace has open issues with valid `metadata.shortleash`, `/shortleash ` also suggests runnable `run issue://<id>` entries. After choosing `run`, `plan`, `inspect`, `evaluate`, or `reconcile`, the suggestions filter by the Bead ID, title, or Shortleash name.
 
+The extension keeps Beads model-visible operations in the normal CLI surface rather than registering a separate `beads` tool. In an OMP session, direct `bd show <id>` calls are changed to `bd show <id> --json` and returned as an issue card. `bd create` and `bd update` commands carrying `--metadata` with a `shortleash` key are schema-validated before execution. A valid `bd update <id> --claim` is claimed by Beads and starts the persisted Shortleash run in the same logical OMP session. Commands containing pipes, redirects, chains, or other complex shell syntax pass through unchanged.
+
 While `/shortleash run` or a metadata-backed Beads claim is active, the TUI shows a compact widget below the editor. Press `Alt+W` to open a colorized, animated right-anchored dashboard overlay; nodes are arranged by dependency depth, edges show the DAG, and up to five recent native tool actions are shown for each active worker. Press `c` or `Ctrl+C` in the dashboard to cancel the active run; `q`, `Esc`, or `Alt+W` only closes the dashboard and restores the editor.
 
 ### Herdr-backed Beads runs
 
-When a Beads issue contains valid `metadata.shortleash`, the Beads `claim` operation delegates to the persisted Shortleash runner. Definitions with declared `agents` use the configured `agent_execution` backend; `herdr` is the default:
+When a Beads issue contains valid `metadata.shortleash`, a successful `bd update <id> --claim` delegates to the persisted Shortleash runner. Definitions with declared `agents` use the configured `agent_execution` backend; `herdr` is the default:
 
 
 With `agent_execution: herdr`:
@@ -93,10 +95,10 @@ With `agent_execution: herdr`:
 Set `agent_execution: subagents` to skip Herdr entirely and run declared agents through the existing OMP subagent executor in the current session. The compact in-session widget and dashboard remain available, but no Herdr tab or panes are created. The standalone CLI always uses the in-process executor because it has no TUI/Herdr session.
 
 When `metadata.shortleash.agents` is omitted, claim execution stays in the current OMP session instead of creating a Herdr tab or subagent. The extension still creates the durable run state, evaluates the configured policies at the start and completion boundaries, records the result, and reports completion or corrective feedback through the same session.
-The claim operation is idempotent for an existing persisted run. To intentionally execute a completed, failed, or aborted run again, pass `restart: true` in the Beads tool claim input:
+The claim path is idempotent for an existing persisted run. To intentionally execute a completed, failed, or aborted run again, use the explicit Shortleash command:
 
-```json
-{ "op": "claim", "issue_id": "scratchpad-3jv", "restart": true }
+```bash
+/shortleash run issue://scratchpad-3jv --restart
 ```
 
 Start Herdr from an interactive terminal so its server inherits the PATH needed by spawned agents:
@@ -719,10 +721,7 @@ src/orchestration/
     beads.ts                     Workflow input, lifecycle projection, and drift reconciliation
     herdr.ts                     Herdr tab and agent-pane execution adapter
   presentation/
-    dashboard.ts                 Live TUI widget and dashboard lifecycle
-    render.ts                    Progress and execution-graph rendering
 src/beads/
-  client.ts                      Bounded argv/JSON Beads client
-  tool.ts                        Discoverable OMP Beads tool
-  render.ts                      Beads tool call/result cards
+  client.ts                      Bounded argv/JSON Beads client for internal reads
+  hooks.ts                       Bash command validation, cards, and claim delegation
 ```

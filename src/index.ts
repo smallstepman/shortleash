@@ -1,29 +1,18 @@
-export type {
-	BeadsClaimInput,
-	BeadsClientOptions,
-	BeadsCloseInput,
-	BeadsCommandResult,
-	BeadsCommandRunner,
-	BeadsCreateInput,
-	BeadsDependencyInput,
-	BeadsDependencyOperationInput,
-	BeadsIssueRecord,
-	BeadsListInput,
-	BeadsReadyInput,
-	BeadsShowInput,
-	BeadsUpdateInput,
+export type { BeadsCommandResult, BeadsCommandRunner, BeadsIssueRecord } from "./beads/client";
+export {
+	BeadsCommandError,
+	extractBeadsData,
+	extractBeadsIssueRecords,
+	parseBeadsJson,
+	runBeadsCommand,
+	runBeadsJson,
 } from "./beads/client";
-export { BeadsClient, BeadsCommandError, extractBeadsIssueRecord, runBeadsCommand } from "./beads/client";
-export type {
-	BeadsClaimDelegation,
-	BeadsClaimDelegationStatus,
-	BeadsClaimHandler,
-	BeadsClaimHandlerInput,
-	BeadsToolDetails,
-	BeadsToolFactoryOptions,
-	BeadsToolParams,
-} from "./beads/tool";
-export { createBeadsTool } from "./beads/tool";
+export type { BeadsClaimHookHandler, BeadsHookOptions, ParsedBeadsCommand } from "./beads/hooks";
+export {
+	formatBeadsShowCard,
+	parseBeadsCommand,
+	registerBeadsHooks,
+} from "./beads/hooks";
 export { default } from "./extension";
 export type {
 	ResolvedSwarmInput,

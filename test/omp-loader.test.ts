@@ -9,6 +9,16 @@ describe("OMP host extension loader", () => {
 
 		expect(result.errors).toEqual([]);
 		expect(result.extensions).toHaveLength(1);
-		expect([...result.extensions[0].tools.keys()]).toEqual(["beads"]);
+		expect(result.extensions[0].tools.size).toBe(1);
+		expect(result.extensions[0].tools.has("bash")).toBe(true);
+		const bash = result.extensions[0].tools.get("bash");
+		expect(bash).toBeDefined();
+		if (!bash) throw new Error("Beads Bash tool was not registered");
+		expect((bash.definition as { mergeCallAndResult?: boolean }).mergeCallAndResult).toBe(true);
+		expect(bash.definition.renderCall).toBeFunction();
+		expect(bash.definition.renderResult).toBeFunction();
+		expect(result.extensions[0].handlers.has("tool_call")).toBe(true);
+		expect(result.extensions[0].handlers.has("tool_result")).toBe(true);
+		expect(result.extensions[0].handlers.has("user_bash")).toBe(true);
 	});
 });

@@ -286,14 +286,14 @@ swarm:
 				content: [
 					{ type: "thinking", thinking: "private reasoning", thinkingSignature: "opaque-signature" },
 					{ type: "text", text: "Parent found the relevant objective." },
-					{ type: "toolCall", id: "call-1", name: "beads", arguments: { op: "ready" } },
+					{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "bd ready" } },
 				],
 			},
 			{
 				role: "toolResult",
 				toolCallId: "call-1",
-				toolName: "beads",
-				content: [{ type: "text", text: "[]" }],
+				toolName: "bash",
+				content: [{ type: "text", text: "No ready Beads issues." }],
 				isError: false,
 				timestamp: 3,
 			},

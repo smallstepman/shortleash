@@ -1,9 +1,26 @@
 import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@oh-my-pi/pi-coding-agent";
 import { type Component, Markdown, type MarkdownTheme, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatAge } from "@oh-my-pi/pi-utils";
-import type { BeadsToolDetails, BeadsToolParams } from "./tool";
 
-type BeadsResult = AgentToolResult<BeadsToolDetails>;
+export type BeadsOperation = "show" | "list" | "ready" | "create" | "update" | "claim" | "close" | "dependencies";
+
+export interface BeadsRenderArgs {
+	op: BeadsOperation;
+	issue_id?: string;
+	issue_ids?: string[];
+	parent_id?: string;
+	title?: string;
+	dependency_action?: string;
+}
+
+export interface BeadsRenderDetails {
+	type?: string;
+	operation: BeadsOperation;
+	args: readonly string[];
+	data: unknown;
+}
+
+type BeadsResult = AgentToolResult<BeadsRenderDetails>;
 type FrameState = "pending" | "success" | "error";
 type RecordValue = Record<string, unknown>;
 
@@ -55,32 +72,30 @@ const PRIORITY_LABELS: Record<number, string> = {
 	4: "Backlog",
 };
 
-function isBeadsToolDetails(value: unknown): value is BeadsToolDetails {
-	if (!isRecord(value) || !isBeadsOperation(value.operation)) return false;
+export function isBeadsRenderDetails(value: unknown): value is BeadsRenderDetails {
 	return (
+		isRecord(value) &&
+		isBeadsOperation(value.operation) &&
 		Array.isArray(value.args) &&
 		value.args.every(argument => typeof argument === "string") &&
 		Object.hasOwn(value, "data")
 	);
 }
 
-function isBeadsOperation(value: unknown): value is BeadsToolParams["op"] {
-	switch (value) {
-		case "show":
-		case "list":
-		case "ready":
-		case "create":
-		case "update":
-		case "claim":
-		case "close":
-		case "dependencies":
-			return true;
-		default:
-			return false;
-	}
+function isBeadsOperation(value: unknown): value is BeadsOperation {
+	return (
+		value === "show" ||
+		value === "list" ||
+		value === "ready" ||
+		value === "create" ||
+		value === "update" ||
+		value === "claim" ||
+		value === "close" ||
+		value === "dependencies"
+	);
 }
 
-export function renderBeadsCall(args: BeadsToolParams, options: ToolRenderResultOptions, theme: Theme): Component {
+export function renderBeadsCall(args: BeadsRenderArgs, options: ToolRenderResultOptions, theme: Theme): Component {
 	if (!options.isPartial) return EMPTY_COMPONENT;
 	const header = renderHeader(args, theme, "pending", options.spinnerFrame);
 	return framedComponent(theme, header, [], "pending");
@@ -90,10 +105,10 @@ export function renderBeadsResult(
 	result: BeadsResult,
 	options: ToolRenderResultOptions,
 	theme: Theme,
-	args?: BeadsToolParams,
+	args?: BeadsRenderArgs,
 ): Component {
-	const details = isBeadsToolDetails(result.details) ? result.details : undefined;
-	const operation: BeadsToolParams["op"] = details?.operation ?? args?.op ?? "show";
+	const details = isBeadsRenderDetails(result.details) ? result.details : undefined;
+	const operation = details?.operation ?? args?.op ?? "show";
 	const effectiveArgs = args ?? { op: operation };
 	const state: FrameState = result.isError ? "error" : "success";
 	const header = renderHeader(effectiveArgs, theme, state);
@@ -114,6 +129,7 @@ export function renderBeadsResult(
 		state,
 	);
 }
+
 function createMarkdownTheme(theme: Theme): MarkdownTheme {
 	return {
 		heading: text => theme.fg("mdHeading", text),
@@ -144,7 +160,7 @@ function createMarkdownTheme(theme: Theme): MarkdownTheme {
 	};
 }
 
-function renderHeader(args: BeadsToolParams, theme: Theme, state: FrameState, spinnerFrame?: number): string {
+function renderHeader(args: BeadsRenderArgs, theme: Theme, state: FrameState, spinnerFrame?: number): string {
 	const operation = formatOperation(args);
 	const bullet = theme.format.bullet || "•";
 	const stateColor = state === "error" ? "error" : state === "success" ? "success" : "borderAccent";
@@ -164,29 +180,26 @@ function statusGlyph(theme: Theme, state: FrameState): string {
 	return theme.fg("borderAccent", theme.status.pending);
 }
 
-function formatOperation(args: BeadsToolParams): string {
-	const op = args.op ?? "operation";
-	switch (op) {
+function formatOperation(args: BeadsRenderArgs): string {
+	switch (args.op) {
 		case "show":
-			return `${op} ${formatIssueIds(args)}`;
+			return `${args.op} ${formatIssueIds(args)}`;
 		case "list":
-			return `${op}${args.parent_id ? ` under ${args.parent_id}` : args.title ? ` ${quote(args.title)}` : ""}`;
+			return `${args.op}${args.parent_id ? ` under ${args.parent_id}` : args.title ? ` ${quote(args.title)}` : ""}`;
 		case "ready":
-			return `${op}${args.parent_id ? ` under ${args.parent_id}` : ""}`;
+			return `${args.op}${args.parent_id ? ` under ${args.parent_id}` : ""}`;
 		case "create":
-			return `${op}${args.title ? ` ${quote(args.title)}` : ""}`;
+			return `${args.op}${args.title ? ` ${quote(args.title)}` : ""}`;
 		case "update":
 		case "claim":
 		case "close":
-			return `${op}${args.issue_id ? ` ${args.issue_id}` : ""}`;
+			return args.op;
 		case "dependencies":
-			return `${op}${args.dependency_action ? ` ${args.dependency_action}` : ""}${args.issue_id ? ` ${args.issue_id}` : ""}`;
-		default:
-			return op;
+			return `${args.op}${args.dependency_action ? ` ${args.dependency_action}` : ""}`;
 	}
 }
 
-function formatIssueIds(args: BeadsToolParams): string {
+function formatIssueIds(args: BeadsRenderArgs): string {
 	const ids = args.issue_ids?.length ? args.issue_ids : args.issue_id ? [args.issue_id] : [];
 	return ids.length > 0 ? ids.join(", ") : "issues";
 }
@@ -196,7 +209,7 @@ function quote(value: string): string {
 	return JSON.stringify(compact.length > 80 ? `${compact.slice(0, 77)}…` : compact);
 }
 
-function summarizeResult(operation: BeadsToolParams["op"], data: unknown): string {
+function summarizeResult(operation: BeadsOperation, data: unknown): string {
 	if (Array.isArray(data)) return `${data.length} ${data.length === 1 ? "record" : "records"}`;
 	if (isRecord(data)) {
 		if (typeof data.id === "string") return data.id;
@@ -214,9 +227,7 @@ function buildResultMarkdown(data: unknown, expanded: boolean): string {
 		const cards = visible.map(value => formatIssueCard(value, expanded));
 		const omitted = issueValues.length - visible.length;
 		if (omitted > 0) cards.push(`> ${omitted} more issue${omitted === 1 ? "" : "s"}. Press **Ctrl+O** to expand.`);
-		if (issueValues.length > MAX_RENDERED_ISSUES) {
-			cards.push(`> Output capped at ${MAX_RENDERED_ISSUES} issues.`);
-		}
+		if (issueValues.length > MAX_RENDERED_ISSUES) cards.push(`> Output capped at ${MAX_RENDERED_ISSUES} issues.`);
 		return cards.join("\n\n---\n\n");
 	}
 
@@ -245,12 +256,25 @@ function formatIssueCard(issue: RecordValue, expanded: boolean): string {
 	}
 	if (facts.length > 0) lines.push(facts.join("  \n"), "");
 
+	let detailsCollapsed = false;
 	const description = stringValue(issue.description);
-	if (description) lines.push("### DESCRIPTION", "", expanded ? description : collapseMarkdown(description), "");
+	if (description) {
+		const renderedDescription = expanded ? description : collapseMarkdown(description);
+		detailsCollapsed ||= renderedDescription !== description;
+		lines.push("### DESCRIPTION", "", renderedDescription, "");
+	}
 	const acceptance = stringValue(issue.acceptance_criteria) || stringValue(issue.acceptance);
-	if (acceptance) lines.push("### ACCEPTANCE CRITERIA", "", expanded ? acceptance : collapseMarkdown(acceptance), "");
+	if (acceptance) {
+		const renderedAcceptance = expanded ? acceptance : collapseMarkdown(acceptance);
+		detailsCollapsed ||= renderedAcceptance !== acceptance;
+		lines.push("### ACCEPTANCE CRITERIA", "", renderedAcceptance, "");
+	}
 	const notes = stringValue(issue.notes);
-	if (notes) lines.push("### NOTES", "", expanded ? notes : collapseMarkdown(notes), "");
+	if (notes) {
+		const renderedNotes = expanded ? notes : collapseMarkdown(notes);
+		detailsCollapsed ||= renderedNotes !== notes;
+		lines.push("### NOTES", "", renderedNotes, "");
+	}
 	const closeReason = stringValue(issue.close_reason);
 	if (closeReason) lines.push("### CLOSE REASON", "", closeReason, "");
 
@@ -260,9 +284,8 @@ function formatIssueCard(issue: RecordValue, expanded: boolean): string {
 	}
 
 	const metadata = collectMetadata(issue);
-	if (Object.keys(metadata).length > 0) {
-		lines.push("### METADATA", "", fencedJson(metadata), "");
-	}
+	if (Object.keys(metadata).length > 0) lines.push("### METADATA", "", fencedJson(metadata), "");
+	if (detailsCollapsed) lines.push("> Press **Ctrl+O** to expand full details.", "");
 	return lines.join("\n").trim();
 }
 

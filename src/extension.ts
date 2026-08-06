@@ -11,8 +11,8 @@ import * as fs from "node:fs/promises";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, SingleResult } from "@oh-my-pi/pi-coding-agent";
 import { formatDuration } from "@oh-my-pi/pi-utils";
-import { BeadsClient, extractBeadsIssueRecords } from "./beads/client";
-import { createBeadsTool } from "./beads/tool";
+import { extractBeadsIssueRecords, runBeadsJson } from "./beads/client";
+import { registerBeadsHooks } from "./beads/hooks";
 import {
 	createSwarmBeadsProjector,
 	type SwarmBeadsProjector,
@@ -71,28 +71,24 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 			}
 		});
 	}
-	pi.setLabel("Shortleash Orchestrator");
-	pi.registerTool(
-		createBeadsTool({
-			onClaim: async ({ issueId, ctx, signal, restart }) =>
-				runClaimedSwarm(issueId, {
-					ctx,
-					settings: pi.pi.settings,
-					signal,
-					restart,
-					logger: pi.logger,
-					directRunner: async (plan, runOptions) => {
-						if (signal?.aborted) throw signal.reason;
-						await startDirectSwarm(plan, ctx, pi, { resume: false, restart: runOptions.restart }, directRuns);
-						return {
-							status: "not-started",
-							swarmName: plan.definition.name,
-							reason: "Direct execution was queued in the current OMP session.",
-						} satisfies ClaimedSwarmResult;
-					},
-				}),
-		}),
-	);
+	registerBeadsHooks(pi, {
+		onClaim: (issueId, ctx, signal) =>
+			runClaimedSwarm(issueId, {
+				ctx,
+				settings: pi.pi.settings,
+				signal,
+				logger: pi.logger,
+				directRunner: async (plan, runOptions) => {
+					if (signal.aborted) throw signal.reason;
+					await startDirectSwarm(plan, ctx, pi, { resume: false, restart: runOptions.restart }, directRuns);
+					return {
+						status: "not-started",
+						swarmName: plan.definition.name,
+						reason: "Direct execution was queued in the current OMP session.",
+					} satisfies ClaimedSwarmResult;
+				},
+			}),
+	});
 
 	const getArgumentCompletions = createShortleashArgumentCompletions(pi);
 	pi.registerCommand("shortleash", {
@@ -187,16 +183,15 @@ interface ShortleashBeadCompletion {
 }
 
 function createShortleashArgumentCompletions(pi: ExtensionAPI): AsyncShortleashArgumentCompletion {
-	const beads = new BeadsClient({
-		run: async (args, _cwd, signal) => {
-			const result = await pi.exec("bd", [...args], { signal, timeout: 2_000 });
+	const runBeads = (args: readonly string[], signal?: AbortSignal) =>
+		runBeadsJson(args, process.cwd(), signal, async (commandArgs, cwd, commandSignal) => {
+			const result = await pi.exec("bd", [...commandArgs], { cwd, signal: commandSignal, timeout: 2_000 });
 			if (result.code !== 0) {
 				const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
-				throw new Error(`bd ${args.join(" ")} failed: ${detail}`);
+				throw new Error(`bd ${commandArgs.join(" ")} failed: ${detail}`);
 			}
 			return result.stdout;
-		},
-	});
+		});
 	let cached: { expiresAt: number; items: ShortleashBeadCompletion[] } | undefined;
 	let pending: Promise<ShortleashBeadCompletion[]> | undefined;
 
@@ -204,8 +199,7 @@ function createShortleashArgumentCompletions(pi: ExtensionAPI): AsyncShortleashA
 		const now = Date.now();
 		if (cached && cached.expiresAt > now) return cached.items;
 		if (pending) return pending;
-		pending = beads
-			.list({ status: "open" }, process.cwd())
+		pending = runBeads(["list", "--status", "open"])
 			.then(result =>
 				extractBeadsIssueRecords(result.data).flatMap(issue => {
 					if (issue.status !== "open" || !hasSwarmMetadata(issue.metadata)) return [];
