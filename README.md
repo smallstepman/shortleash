@@ -1,294 +1,436 @@
 # Shortleash
 
-Multi-agent orchestration for oh-my-pi. Define agent workflows in JSON or YAML — pipelines, parallel fan-outs, sequential chains, or any DAG — and run them unattended until completion.
+Shortleash is an oh-my-pi extension and standalone runner for multi-agent orchestration. Define a pipeline, parallel fan-out, sequential chain, or arbitrary acyclic dependency graph in JSON or YAML. Each declared agent runs as an oh-my-pi worker with the tools available to that host; the orchestrator owns ordering, persistence, policy boundaries, and recovery.
 
-Each agent is a full oh-my-pi subagent with access to every tool: bash, python, read, write, edit, grep, find, fetch, web_search, browser. The orchestrator manages lifecycle and ordering; agents communicate through the shared workspace filesystem.
-
-Use it for anything: research pipelines, code generation, data processing, content creation, analysis workflows, CI-like automation — any multi-step task that benefits from specialized agents working in coordination.
+The implementation deliberately keeps the product name **Shortleash** separate from the definition format: the top-level configuration key is `swarm` because that is the parser contract, while Beads stores the same definition under `metadata.shortleash`.
 
 ## Setup
 
+Requirements:
+
+- Bun `>=1.3.14`.
+- oh-my-pi `^17` when loading the extension in the TUI.
+- Herdr is optional at runtime. It is used by default for declared-agent TUI runs when available.
+
+From this repository root:
+
 ```bash
-cd packages/shortleash
 bun install
+bun run check
 ```
 
-Swarm definitions accept the same structure in either `.json` or `.yaml`/`.yml` files.
+The package declares the `omp-shortleash` binary and the `./src/extension.ts` OMP extension entrypoint. When the package is linked or installed, use `omp-shortleash`; from a checkout, `bun run src/cli.ts` is equivalent.
 
 ## Running
 
-### Standalone (recommended for long-running work)
+### Standalone CLI
+
+The standalone runner executes declared agents without a TUI or Herdr session:
 
 ```bash
-# Foreground — runs until complete, no timeout:
+# Run a JSON/YAML definition until it completes or fails.
+bun run src/cli.ts path/to/swarm.yaml
+
+# The package bin has the same interface after it is installed or linked.
 omp-shortleash path/to/swarm.yaml
 
-# Beads issue input also works:
-omp-shortleash obligated-gty
-omp-shortleash issue://obligated-gty
-  > pipeline.log 2>&1 & disown
+# A Beads ID or issue:// reference is also accepted.
+omp-shortleash shrtlsh-123
+omp-shortleash issue://shrtlsh-123
 ```
 
-The standalone runner has no timeout. It runs iteration after iteration until the pipeline finishes or you kill it.
+A definition without `agents` is a current-session execution and must be run from the OMP TUI; the standalone CLI rejects it because it has no current conversation to continue.
 
-### Restart and resume
+The CLI commands are:
 
-The state directory is the durable execution record. A second run does not silently overwrite it:
+```text
+omp-shortleash <file.json|file.yaml|beads-id> [--resume|--restart]  run
+omp-shortleash plan <file.json|file.yaml|beads-id> [--json]         validate and inspect
+omp-shortleash inspect <file.json|file.yaml|beads-id> [--json]      alias for plan
+omp-shortleash status <name> [--json]                               read persisted state
+omp-shortleash evaluate <file.json|file.yaml|beads-id> [--json]     evaluate persisted results
+omp-shortleash reconcile <beads-id|issue://beads-id> [--json]       check Beads drift
+omp-shortleash dashboard <file.json|file.yaml|beads-id>             render the terminal dashboard
+```
+
+`--json` prints structured output for `plan`, `status`, `evaluate`, and `reconcile`; a run also prints a final JSON envelope when `--json` is supplied. `dashboard` renders the live terminal view and stops when the persisted run reaches a terminal state.
+
+### Resume and restart
+
+Shortleash persists state under the configured workspace. A second run never silently overwrites an existing run:
 
 ```bash
-# Continue the unfinished logical run after a host restart.
+# Continue an unfinished run after a host/process restart.
 omp-shortleash path/to/swarm.yaml --resume
 
-# Intentionally discard the prior run and start a new one.
+# Intentionally discard the previous in-memory run state and start again.
 omp-shortleash path/to/swarm.yaml --restart
 ```
 
-`--resume` requires the persisted definition hash, agent set, mode, agent execution backend, workspace, and target count to remain compatible. Successful results already recorded for the unfinished iteration are reused; only missing or failed work runs again. A valid stale `run.lock` is recoverable only with `--resume` or `--restart`; a corrupt lock is never removed automatically.
+`--resume` requires the persisted definition hash, workspace, mode, `target_count`, and agent set to remain compatible. Successful results already recorded for the unfinished iteration are reused; missing or failed work runs again. A stale valid `run.lock` is recoverable only with `--resume` or `--restart`; a corrupt lock is never removed automatically. A completed run requires `--restart` rather than `--resume`.
 
-Run evaluators against the persisted results without starting agents:
+`evaluate` reads the persisted results and runs the configured policy evaluators without starting agents. A blocked decision exits non-zero and is stored in the state; it does not silently mark the pipeline complete.
 
-```bash
-omp-shortleash evaluate path/to/swarm.yaml --json
-```
+### OMP TUI
 
-Evaluation writes the structured policy decision to `state/pipeline.json`; a blocked decision exits non-zero but does not silently mark the pipeline complete.
-
-### Inside oh-my-pi (TUI)
-
-Register the extension in your project settings (`.omp/settings.json`) or user settings (`~/.omp/agent/settings.json`):
+Load the extension in project settings (`.omp/settings.json`) or user settings (`~/.omp/agent/settings.json`):
 
 ```json
 {
-	"extensions": ["/absolute/path/to/oh-my-pi/packages/shortleash"]
+  "extensions": [
+    "/absolute/path/to/shortleash/src/extension.ts"
+  ]
 }
 ```
 
-Then:
+Then use:
 
-```
-/shortleash run path/to/swarm.yaml
-/shortleash run obligated-gty
-/shortleash run issue://obligated-gty
-/shortleash status <name>
-/shortleash evaluate obligated-gty --json
-/shortleash reconcile obligated-gty
+```text
+/shortleash run path/to/swarm.yaml [--resume|--restart]
+/shortleash run shrtlsh-123
+/shortleash run issue://shrtlsh-123
+/shortleash plan path/to/swarm.yaml
+/shortleash inspect path/to/swarm.yaml
+/shortleash status <name> [--json]
+/shortleash evaluate path/to/swarm.yaml [--json]
+/shortleash reconcile shrtlsh-123 [--json]
 /shortleash help
 ```
-When the current Beads workspace has open issues with valid `metadata.shortleash`, `/shortleash ` also suggests runnable `run issue://<id>` entries. After choosing `run`, `plan`, `inspect`, `evaluate`, or `reconcile`, the suggestions filter by the Bead ID, title, or Shortleash name.
 
-The extension keeps Beads model-visible operations in the normal CLI surface rather than registering a separate `beads` tool. In an OMP session, direct `bd show <id>` calls are changed to `bd show <id> --json` and returned as an issue card. `bd create` and `bd update` commands carrying `--metadata` with a `shortleash` key are schema-validated before execution. A valid `bd update <id> --claim` is claimed by Beads and starts the persisted Shortleash run in the same logical OMP session. Commands containing pipes, redirects, chains, or other complex shell syntax pass through unchanged.
+`plan` and `inspect` validate and display the executable plan. `reconcile` requires a Beads input. When the current Beads workspace has open issues with valid `metadata.shortleash`, argument completion suggests `run issue://<id>` entries and filters them by Bead ID, title, or Shortleash name.
 
-While `/shortleash run` or a metadata-backed Beads claim is active, the TUI shows a compact widget below the editor. Press `Alt+W` to open a colorized, animated right-anchored dashboard overlay; nodes are arranged by dependency depth, edges show the DAG, and up to five recent native tool actions are shown for each active worker. Press `c` or `Ctrl+C` in the dashboard to cancel the active run; `q`, `Esc`, or `Alt+W` only closes the dashboard and restores the editor.
+### Dashboard controls
 
-### Herdr-backed Beads runs
+While a TUI run is active, Shortleash renders a compact widget below the editor. Press `Alt+W` to open the animated dashboard overlay.
 
-When a Beads issue contains valid `metadata.shortleash`, a successful `bd update <id> --claim` delegates to the persisted Shortleash runner. Definitions with declared `agents` use the configured `agent_execution` backend; `herdr` is the default:
+- `c`, `Ctrl+C`, or `x`: request cancellation.
+- `q`, `Esc`, or `Alt+W`: close the overlay without cancelling.
+- `j`/`k`: scroll one line; `h`/`l`: scroll one page.
 
+Closing the overlay does not stop the run.
 
-With `agent_execution: herdr`:
-1. The tab is labeled `shortleash: <name>` and its initial pane runs the live swarm dashboard.
-2. The current DAG wave gets one visible agent pane per runnable agent.
-3. Agents in a wave execute concurrently; each pane is closed in its `finally` path when that agent completes or fails.
-4. The next wave opens only after the previous wave's panes have closed, so a diamond `1-3-1` run reuses one tab while rotating `1`, then `3`, then `1` agent panes.
-5. The tab is closed after the persisted run reaches a terminal state.
+## Execution backends
 
-Set `agent_execution: subagents` to skip Herdr entirely and run declared agents through the existing OMP subagent executor in the current session. The compact in-session widget and dashboard remain available, but no Herdr tab or panes are created. The standalone CLI always uses the in-process executor because it has no TUI/Herdr session.
+- `agent_execution: herdr` is the default for definitions with declared agents in the TUI. Shortleash creates one Herdr tab with a dashboard pane, creates one pane per runnable agent in the current DAG wave, closes those panes in cleanup, then rotates to the next wave. The tab closes after the run reaches a terminal state.
+- `agent_execution: subagents` uses the existing oh-my-pi subagent executor in the current session and never creates a Herdr tab. The Shortleash widget and dashboard remain available in the TUI.
+- The standalone CLI always uses the in-process executor because it has no TUI/Herdr session.
+- `isolation: worktree` uses the host worktree-isolation lifecycle and therefore skips the Herdr tab for that definition.
+- If Herdr is unavailable, its tab or pane response is invalid, or startup fails, Shortleash closes any tab it created and falls back to the in-process executor without discarding durable state.
+- The default Herdr worker kind is `omp`. Set `OMP_SWARM_HERDR_AGENT` to another supported Herdr kind when needed. Select `agent_execution: subagents` when Herdr should not be used; there is no separate `OMP_SWARM_HERDR=off` switch in the current source.
 
-When `metadata.shortleash.agents` is omitted, claim execution stays in the current OMP session instead of creating a Herdr tab or subagent. The extension still creates the durable run state, evaluates the configured policies at the start and completion boundaries, records the result, and reports completion or corrective feedback through the same session.
-The claim path is idempotent for an existing persisted run. To intentionally execute a completed, failed, or aborted run again, use the explicit Shortleash command:
+The adapter delegates argv-safe commands to `@andrewjacop/pi-herdr` `0.2.5`. That package currently exposes no runtime entrypoint, so the source-path import is isolated in `src/orchestration/adapters/herdr.ts`; consumers do not need to import it directly.
 
-```bash
-/shortleash run issue://scratchpad-3jv --restart
-```
+## Durable state and monitoring
 
-Start Herdr from an interactive terminal so its server inherits the PATH needed by spawned agents:
+State is stored in `<workspace>/.swarm_<name>/`:
 
-```bash
-herdr
-herdr status
-```
-
-The default worker kind is `omp`; set `OMP_SWARM_HERDR_AGENT` to another Herdr-supported kind when required. Set `OMP_SWARM_HERDR=off` to force the existing in-process executor even for `agent_execution: herdr`. Worktree-isolated swarms also use the in-process executor because a single visible tab cannot safely represent independent worktree lifecycles. If Herdr is missing, stopped, or returns an invalid pane response, the extension closes any tab it created and falls back without losing the durable Shortleash state.
-
-The integration delegates argv-safe CLI execution to the `@andrewjacop/pi-herdr` dependency. Its current package surface has no runtime export, so the adapter isolates the source-path import; no private OMP APIs are used. OMP workers submit prompts without relying on Herdr's agent state transition (the installed OMP binary can remain `idle` while work runs); the adapter polls the pane's active-work marker before reading the result.
-
-## Monitoring
-
-State persists to `<workspace>/.swarm_<name>/` while the pipeline runs:
-
-```
+```text
 .swarm_<name>/
-  state/pipeline.json    # Live pipeline + per-agent status
-  logs/orchestrator.log  # Wave transitions, iteration progress
-  logs/<agent>.log       # Per-agent timestamps and errors
-  context/               # Agent session artifacts
+  run.lock                 # active-run identity and recovery metadata
+  state/pipeline.json      # pipeline, agent, results, policy, and projection state
+  logs/orchestrator.log    # wave and iteration lifecycle
+  logs/<agent>.log         # per-agent timestamps and errors
+  context/                 # child-session artifacts and inherited history
 ```
 
-Check on a running pipeline:
+Inspect a run while it is active:
 
 ```bash
-# Quick status
-cat workspace/.swarm_mypipeline/state/pipeline.json | python -m json.tool
+python -m json.tool <workspace>/.swarm_mypipeline/state/pipeline.json
 
-# Watch the orchestrator log
-tail -f workspace/.swarm_mypipeline/logs/orchestrator.log
+tail -f <workspace>/.swarm_mypipeline/logs/orchestrator.log
+
+omp-shortleash status mypipeline
+omp-shortleash status mypipeline --json
 ```
 
----
+The state file records the definition hash, agent status, result history, policy decisions and observations, Beads projection history, manifest, timestamps, and recovery metadata. Writes use a temporary file plus rename, and a run lock prevents concurrent execution of the same logical run.
 
-## JSON/YAML Reference
+## Configuration reference
 
-Every swarm is a single JSON or YAML file with a top-level `swarm` key:
+Every definition is one JSON or YAML document with exactly one top-level `swarm` object. `name` and `workspace` are required. Unknown keys are rejected. The parser also rejects the removed `rules` and `must` policy fields; use `checks` instead.
+
+<details>
+<summary>Minimal current-session definition</summary>
+
+Use this form from `/shortleash run` when the current OMP session should do the work directly. `agents` is intentionally omitted; `task` is optional and has a generated fallback when omitted.
 
 ```yaml
 swarm:
-  name: my-pipeline # Identifier (state stored in .swarm_<name>/)
-  workspace: ./workspace # Working directory (relative to the definition file location)
-  task: "Complete this objective directly." # Optional; used when agents is omitted.
-  mode: pipeline # pipeline | parallel | sequential
-  agent_execution: herdr # herdr | subagents; default: herdr for declared agents
-  target_count: 10 # Iterations (pipeline mode only, default: 1)
-  model: claude-opus-4-6 # Default model for agents without an override (optional)
-  workspace_isolation: none # none | worktree; default: none
-  inherit_history: false # pass the current OMP branch to workers; default: false
-  failure_policy: skip_dependents # fail_fast | continue | skip_dependents
-  max_concurrency: 4 # Optional per-wave agent limit
-  agent_timeout_ms: 3600000 # Optional per-agent timeout
+  name: repository-maintenance
+  workspace: .
+  task: Inspect the repository, implement the requested change, and report evidence.
+```
 
+</details>
+
+<details>
+<summary>Minimal declared-agent definition</summary>
+
+Use `agents` for standalone runs, Herdr-backed runs, subagent execution, or any DAG with multiple workers.
+
+```yaml
+swarm:
+  name: codebase-audit
+  workspace: ./workspace
+  mode: parallel
+  agent_execution: subagents
+  agents:
+    security:
+      role: security auditor
+      task: Audit src/ and write reports/security.md.
+    performance:
+      role: performance analyst
+      task: Inspect src/ for bottlenecks and write reports/performance.md.
+```
+
+</details>
+
+<details>
+<summary>Full YAML configuration example</summary>
+
+```yaml
+swarm:
+  name: feature-implementation
+  workspace: ./workspace
+  mode: pipeline
+  agent_execution: subagents
+  target_count: 3
+  failure_policy: skip_dependents
+  max_concurrency: 4
+  agent_timeout_ms: 3600000
+  model: claude-opus-4-6
+  isolation: none
+  inherit_history: false
   plugins:
     - ./policies/obligations.ts
   checks:
-    - obligations:architecture-boundary # Inherited by every declared agent; direct definitions evaluate it in the current session.
-    - obligations:acceptance-evidence
+    - obligations:architecture-boundary
   evals:
     - obligations:architecture-evaluator
-
   agents:
-    first_agent:
-      role: short-role-name
-      task: |
-        Full instructions for this agent.
-      extra_context: |
-        Optional additional system prompt text.
+    planner:
+      role: architect
+      task: Read the feature spec and write plan.md.
       reports_to:
-        - downstream_agent
+        - api
+        - ui
+    api:
+      role: backend developer
+      task: Implement the API described in plan.md.
       waits_for:
-        - upstream_agent
-      model: claude-sonnet-4-5 # Optional per-agent override
-      workspace_isolation: worktree # Optional per-agent override
-      inherit_history: true # Optional per-agent override; TUI runs only
-      checks:
-        - obligations:architecture-boundary
-        - obligations:acceptance-evidence
-      evals:
-        - obligations:architecture-evaluator
+        - planner
+    ui:
+      role: frontend developer
+      task: Implement the UI described in plan.md.
+      waits_for:
+        - planner
 ```
 
-When `agents` is omitted, `/shortleash run` queues `task` in the current OMP session and never invokes a subagent. The top-level `checks` and `evals` are evaluated for that session. When agents are declared, those top-level policy references are inherited by every agent and run before any agent-local references.
+`token_budget` and `request_budget` are also accepted as positive integers by the current parser and metadata schema, but the current execution path does not pass them to the oh-my-pi worker. They are therefore not enforcement controls yet.
 
-The equivalent JSON form uses the same snake_case field names:
+</details>
+
+<details>
+<summary>Equivalent JSON shape</summary>
+
+The JSON form uses the same snake_case keys as YAML:
 
 ```json
 {
-	"swarm": {
-		"name": "my-pipeline",
-		"workspace": "./workspace",
-		"mode": "pipeline",
-		"agent_execution": "herdr",
-		"target_count": 10,
-		"model": "claude-opus-4-6",
-		"agents": {
-			"first_agent": {
-				"role": "short-role-name",
-				"task": "Full instructions for this agent.",
-				"extra_context": "Optional additional system prompt text.",
-				"reports_to": ["downstream_agent"],
-				"waits_for": ["upstream_agent"],
-				"model": "claude-sonnet-4-5",
-				"checks": ["obligations:architecture-boundary", "obligations:acceptance-evidence"],
-				"evals": ["obligations:architecture-evaluator"]
-			}
-		}
-	}
+  "swarm": {
+    "name": "feature-implementation",
+    "workspace": "./workspace",
+    "mode": "parallel",
+    "agent_execution": "subagents",
+    "failure_policy": "continue",
+    "max_concurrency": 2,
+    "agents": {
+      "planner": {
+        "role": "architect",
+        "task": "Write plan.md.",
+        "reports_to": ["implementer"]
+      },
+      "implementer": {
+        "role": "engineer",
+        "task": "Implement plan.md.",
+        "waits_for": ["planner"]
+      }
+    }
+  }
 }
 ```
 
-### Beads-backed definitions
+</details>
 
-The TUI and standalone runner also accept a bare Beads ID or an `issue://` reference. The runner executes `bd show <id> --json` in the current project and reads the issue's `metadata` object:
+<details>
+<summary>Isolation and resource budgets</summary>
 
-```text
-/shortleash run obligated-gty
-/shortleash run issue://obligated-gty
+Use `isolation` to choose shared workspace execution or host-managed worktrees. An agent-level value overrides the global value:
+
+```yaml
+swarm:
+  name: isolated-build
+  workspace: ./workspace
+  isolation: worktree
+  agent_timeout_ms: 900000
+  token_budget: 200000
+  request_budget: 100
+  agents:
+    reviewer:
+      role: reviewer
+      task: Inspect the isolated result and write review.md.
+      isolation: none
 ```
 
-A Beads metadata object must contain the standard swarm definition under `metadata.shortleash`; it is not a separate compact schema:
+`none` keeps workers in the configured workspace. `worktree` runs each worker in a host-managed copy-on-write worktree and merges a successful patch; if any agent's effective isolation is `worktree`, the Herdr adapter skips the tab for that definition. `agent_timeout_ms` is enforced through an abort-signal scope for each attempt. `token_budget` and `request_budget` are parsed and persisted but are not passed to the current oh-my-pi worker API, so they do not enforce limits yet.
+
+</details>
+
+### Top-level fields
+
+| Field | Required | Default | Source-verified behavior |
+| --- | --- | --- | --- |
+| `name` | yes | — | Non-empty; may contain letters, numbers, `.`, `_`, and `-`. State is stored under `.swarm_<name>/`. |
+| `workspace` | yes | — | Non-empty path. Relative paths resolve from the definition file (or the Beads workspace for metadata input). |
+| `task` | no | generated direct-session prompt | Used by a definition without `agents`; it is ignored as an agent task when declared agents are present. |
+| `mode` | no | `sequential` | `pipeline`, `parallel`, or `sequential`. |
+| `agent_execution` | no | `herdr` | `herdr` or `subagents`; relevant to declared agents in the TUI. |
+| `target_count` | no | `1` | Positive integer. Repeats the full graph only in `pipeline` mode; definitions without agents support exactly one target. |
+| `failure_policy` | no | `skip_dependents` | `fail_fast` stops after the failing wave; `continue` runs later work; `skip_dependents` records dependent agents as skipped. |
+| `max_concurrency` | no | all runnable agents in a wave | Positive integer cap applied per wave. |
+| `agent_timeout_ms` | no | host/default timeout | Positive integer timeout applied to each agent attempt. |
+| `token_budget` | no | — | Positive integer accepted and persisted, but not currently enforced by the worker path. |
+| `request_budget` | no | — | Positive integer accepted and persisted, but not currently enforced by the worker path. |
+| `model` | no | OMP session default | Default model ID; an agent-level `model` overrides it. Shortleash does not validate model IDs against a bundled catalog. |
+| `isolation` | no | `none` | `none` or `worktree`. Worktree mode uses host-managed copy-on-write isolation and merges the captured patch. `workspace_isolation` is an accepted alias. |
+| `inherit_history` | no | `false` | Boolean or `parent`/`inherit` for true, `none`/`isolated` for false. `history` and `parent_history` are accepted aliases. Parent history requires an interactive OMP session. |
+| `plugins` | no | `[]` plus auto-discovery | Paths to code plugin modules/directories, resolved relative to the definition file. |
+| `checks` | no | `[]` | Blocking check references. |
+| `evals` | no | `[]` | Structured evaluator references; failures block unless the evaluator definition sets `blocking: false`. |
+| `agents` | no | omitted | If present, must contain at least one named agent. |
+
+### Agent fields and dependency graph
+
+| Field | Required | Behavior |
+| --- | --- | --- |
+| `role` | yes | Short role text used to build the worker system prompt. |
+| `task` | yes | Complete user prompt for the worker. |
+| `extra_context` | no | Additional system-prompt text. |
+| `reports_to` | no | Each listed target depends on this agent. |
+| `waits_for` | no | Explicit dependencies for this agent. |
+| `model` | no | Overrides `swarm.model`. |
+| `isolation` | no | Overrides global isolation; `workspace_isolation` is an alias. |
+| `inherit_history` | no | Overrides global parent-history behavior; `history` and `parent_history` are aliases. |
+| `checks` | no | Agent-scoped check references, merged with top-level checks. |
+| `evals` | no | Agent-scoped evaluator references, merged with top-level evals. |
+
+The orchestrator rejects unknown agents, self-dependencies, and cycles. Explicit `waits_for` edges and `reports_to` edges are combined. With no explicit dependencies, `pipeline` and `sequential` modes chain agents in declaration order; `parallel` mode places them in one wave. Agents in a wave run concurrently, subject to `max_concurrency`; the next wave waits for the previous wave.
+
+## Beads integration
+
+A Beads input is a projection target, not the authoritative Shortleash state. The runner reads `bd show <id> --json` and expects a valid definition at `metadata.shortleash`.
+
+<details>
+<summary>Beads metadata shape</summary>
+
+The value under `metadata.shortleash` uses exactly the same schema as a file definition. Other Beads metadata is preserved and ignored by the Shortleash parser.
 
 ```json
 {
-	"shortleash": {
-		"name": "streaming-retry",
-		"workspace": ".",
-		"mode": "sequential",
-		"agent_execution": "herdr",
-		"agents": {
-			"backend": {
-				"role": "backend",
-				"task": "Implement streaming retry logic."
-			}
-		}
-	}
+  "shortleash": {
+    "name": "streaming-retry",
+    "workspace": ".",
+    "mode": "sequential",
+    "agent_execution": "subagents",
+    "agents": {
+      "backend": {
+        "role": "backend engineer",
+        "task": "Implement streaming retry logic."
+      }
+    }
+  },
+  "acceptance": "Existing retry clients remain compatible."
 }
 ```
 
-The value under `metadata.shortleash` uses exactly the same structure as a file definition. Other metadata such as `workflow`, `acceptance`, or `risk` is preserved by Beads but is not interpreted as swarm configuration.
-
-### Beads projection and reconciliation
-
-When the input is a Beads issue, lifecycle events are projected as notes on that issue. The adapter uses the installed CLI contract (`bd show <id> --json` followed by `bd update <id> --notes ...`) and preserves existing notes. It never closes the issue: the workflow state and its accepted result remain authoritative.
-
-Inspect projection drift after a process restart or operator change:
+Create/update metadata with Beads' JSON option, for example:
 
 ```bash
-omp-shortleash reconcile obligated-gty --json
+bd create "Streaming retry" \
+  --metadata '{"shortleash":{"name":"streaming-retry","workspace":".","mode":"sequential","agents":{"backend":{"role":"backend engineer","task":"Implement streaming retry logic."}}}}'
 ```
 
-The command compares the persisted authoritative Shortleash status with the projected Bead status and reports missing projections. A manually closed Bead while the Shortleash run is not `completed` is reported as drift and returns a non-zero status; it is not silently converted into workflow completion.
+</details>
 
-### Top-Level Fields
+<details>
+<summary>Claim behavior and Beads hooks</summary>
 
-| Field          | Required | Default         | Description                                                                    |
-| -------------- | -------- | --------------- | ------------------------------------------------------------------------------ |
-| `name`         | yes      | —               | Pipeline identifier. State directory is `.swarm_<name>/`                       |
-| `workspace`    | yes      | —               | Shared working directory. Relative paths resolve from the definition file location |
-| `mode`         | no       | `sequential`    | Execution mode (see below)                                                     |
-| `target_count` | no       | `1`             | How many times to repeat the full pipeline. Only meaningful in `pipeline` mode |
-| `model`        | no       | session default | Default model for agents that do not set `agents.<name>.model`                |
-| `workspace_isolation` | no       | `none`          | Worker isolation mode. `worktree` uses the existing OMP isolation lifecycle and merges the captured patch back. |
-| `inherit_history`    | no       | `false`         | Copy the current interactive OMP branch into the worker session before its task. Standalone runs cannot inherit a parent conversation. |
-| `plugins`      | no       | auto-discovered | Code module paths, resolved relative to the definition file                   |
-| `checks`       | no       | `[]`            | Blocking check references (`plugin:id`)                                      |
-| `evals`        | no       | `[]`            | Structured evaluator references (`plugin:id`)                                  |
+The extension keeps Beads model-visible operations on the normal CLI surface; it does not register a separate model-facing `beads` tool.
 
-### Agent Fields
+- A direct, simple `bd show <id>` call is converted to a bounded argv `bd show <id> --json` lookup and rendered as a structured issue card. Complex shell commands containing pipes, redirects, chains, substitutions, or glob syntax pass through unchanged.
+- Direct `bd create` and `bd update` commands carrying `--metadata` are validated when the metadata contains `shortleash`. Inline JSON and `--metadata @file.json` are supported by the hook validator.
+- A valid `bd update <id> --claim` executes normally, then starts the persisted Shortleash run in the same logical OMP session. Invalid or missing `metadata.shortleash` is not autorun.
+- A persisted claim is idempotent. Existing `running` and `completed` runs are reported without silently duplicating work. Use `/shortleash run issue://<id> --restart` to intentionally rerun a completed, failed, or aborted run.
 
-| Field           | Required | Description                                                                                  |
-| --------------- | -------- | -------------------------------------------------------------------------------------------- |
-| `role`          | yes      | Short role identifier — becomes the agent's system prompt                                    |
-| `workspace_isolation` | no       | Global value | Per-agent isolation override: `none` or `worktree`. |
-| `inherit_history`    | no       | Global value | Per-agent parent-history override: boolean, `parent`, or `none`. |
-| `task`          | yes      | Complete instructions sent as user prompt. Use JSON strings or YAML `|` for multi-line       |
-| `extra_context` | no       | Additional text appended to system prompt                                                    |
-| `model`         | no       | Model override for this agent only                                                           |
-| `reports_to`    | no       | List of agent names that depend on this agent                                                |
-| `waits_for`     | no       | List of agent names this agent depends on                                                   |
-| `checks`        | no       | Agent-scoped blocking check references (`plugin:id`)                         |
-| `evals`         | no       | Agent-scoped structured evaluator references (`plugin:id`)                                  |
+</details>
 
+<details>
+<summary>Projection and reconciliation</summary>
 
-### Code-defined policy plugins
+For a Beads input, lifecycle milestones are appended to the issue notes as idempotent lines such as `[swarm:streaming-retry] started: running`. Existing notes are preserved. Shortleash never closes the Bead as part of a run.
 
-Policy modules use the same small, code-loaded extension shape as tools. They are not prompt instructions: the swarm controller executes them at declared DAG boundaries and records the structured result in `.swarm_<name>/state/pipeline.json`.
+```bash
+omp-shortleash reconcile shrtlsh-123 --json
+/shortleash reconcile issue://shrtlsh-123 --json
+```
+
+Reconciliation checks that the projected Bead still exists and reports drift when a Bead is manually closed while authoritative Shortleash state is not `completed`. A closed Bead is never converted into an accepted workflow result.
+
+</details>
+
+## Policies and code-defined plugins
+
+Policies are executable runtime contracts, not prompt instructions:
+
+- A **check** returns `boolean` or `{ passed, message, findings, evidenceRefs }`. A failed check blocks its boundary.
+- An **evaluator** returns `{ outcome, explanation, findings, evidenceRefs }` and has an explicit `id`, `version`, `description`, optional `boundary`, optional `capture`, and optional `blocking` flag. A failed evaluator blocks by default; `blocking: false` makes it advisory.
+- Supported boundaries are `agent`, `wave`, `iteration`, and `complete`. A global policy defaults to `complete`; an agent-scoped policy defaults to `agent`.
+- Top-level references are evaluated for the whole definition and inherited into each declared agent's scoped policy set. Agent-scoped policies run during finalization and can return corrective feedback to the same worker session.
+- Every policy context includes the normalized definition, `cwd`, `workspace`, `swarmDir`, boundary, iteration, optional attempt/wave/agent, normalized `params`, optional before/after `observation`, latest results, result history, and durable state.
+- A policy can define `capture(context)` to record before/after snapshots. The snapshots and structured decisions are persisted in `state/pipeline.json`.
+
+<details>
+<summary>Policy reference forms and parameters</summary>
+
+String references use `plugin:id`:
+
+```yaml
+checks:
+  - obligations:architecture-boundary
+  - git:changed-files::extension=.rs::minimum=3::include_untracked=true
+```
+
+Object references use the same identity and scalar parameters:
+
+```yaml
+checks:
+  - plugin: git
+    id: changed-files
+    params:
+      extension: ".rs"
+      minimum: 3
+      include_untracked: true
+```
+
+Inline values are decoded as strings, finite numbers, booleans, or `null`. Parameter keys must start with a letter or underscore and may contain letters, numbers, underscores, and hyphens.
+
+</details>
+
+<details>
+<summary>Code plugin implementation</summary>
+
+Plugin modules default-export `defineSwarmPlugin(...)` or a compatible plugin factory:
 
 ```ts
 import { defineSwarmPlugin } from "@oh-my-pi/shortleash/plugin";
@@ -303,83 +445,48 @@ export default defineSwarmPlugin({
       check: async ({ workspace }) => ({
         passed: await Bun.file(`${workspace}/ARCHITECTURE.md`).exists(),
         message: "ARCHITECTURE.md is required before completion.",
-        evidenceRefs: ["workspace://ARCHITECTURE.md"],
-      }),
-    });
-
-    api.registerCheck({
-      id: "acceptance-evidence",
-      description: "Every completion claim has evidence.",
-      boundary: "complete",
-      check: ({ latestResults }) => latestResults.size > 0,
+        evidenceRefs: ["workspace://ARCHITECTURE.md"]
+      })
     });
 
     api.registerEval({
       id: "architecture-evaluator",
       version: "1",
-      description: "Checks the architecture evidence.",
+      description: "Checks the latest agent evidence.",
       boundary: "complete",
       evaluate: ({ latestResults }) => ({
         outcome: latestResults.size > 0 ? "pass" : "fail",
         explanation: "The evaluator inspected the latest agent results.",
         findings: [],
-        evidenceRefs: ["workspace://ARCHITECTURE.md"],
-      }),
+        evidenceRefs: ["workspace://ARCHITECTURE.md"]
+      })
     });
-  },
+  }
 });
 ```
 
-Discovery order is project-local `.omp/swarm/`, project-local `.swarm/plugins/`, enabled plugin packages, then paths listed in `swarm.plugins`. A directory may expose `index.ts` or one level of module files. Installed plugin packages may declare `omp.swarm` or provide a conventional `swarm/` directory.
+</details>
 
-`checks` return a boolean or `{ passed, message, findings, evidenceRefs }`; failures block the current boundary. `evals` return `{ outcome, explanation, findings, evidenceRefs }`. A failed evaluation blocks by default; set `blocking: false` for advisory findings. Supported boundaries are `wave`, `iteration`, and `complete`; omitted boundaries run at `complete`.
-The same `checks` and `evals` fields may be declared under `agents.<name>`. Top-level references run against the whole swarm; agent-scoped references run with `context.agent` set to that agent and are aggregated into the boundary decision. Both scopes are validated before execution.
+<details>
+<summary>Plugin discovery order</summary>
 
-#### Parameterized references and attempt snapshots
+Shortleash de-duplicates discovered paths and searches in this order:
 
-Policy references can carry a validated scalar parameter object. The same policy can therefore be configured more than once without duplicating plugin code:
+1. Project-local `.omp/swarm/` and `.swarm/plugins/` roots.
+2. The same roots under the definition file's directory when it differs from the current directory.
+3. Enabled OMP plugins that declare `swarm` in their manifest, an enabled feature, or a conventional `swarm/` directory.
+4. Paths listed in `swarm.plugins`.
 
-```yaml
-checks:
-  - plugin: git
-    id: changed-files
-    params:
-      extension: ".rs"
-      minimum: 3
-      include_untracked: true
-```
+A configured path may be a `.ts`, `.js`, `.mjs`, or `.cjs` module, a directory with `index.*`, or a directory containing one level of module files/child `index.*` entries.
 
-String references remain valid. Inline parameters use `::key=value` segments (values are decoded as strings, finite numbers, booleans, or `null`), for example `git:changed-files::extension=.rs::minimum=3`.
+</details>
 
-Policy callbacks receive the normalized values as `context.params`. A check or evaluator may also define `capture(context)`. The runtime captures `before` and `after` snapshots for each agent attempt, passes the pair as `context.observation`, and persists the snapshots in `.swarm_<name>/state/pipeline.json` keyed by agent, iteration, attempt, and policy reference. Capture values should be durable, JSON-serializable references such as a Git status record or a Nix profile snapshot.
+## Execution modes and patterns
 
-Agent-scoped blocking policies are checked before finalization. A rejection is returned as structured corrective feedback to the same keep-alive OMP session, which may continue through follow-up turns. If the policy remains rejected after the runtime retry budget, the agent fails instead of finalizing. Evaluators registered with `blocking: false` remain advisory and do not reject the boundary.
+<details>
+<summary>Pipeline: repeat the full graph</summary>
 
-### Execution Modes
-
-**`pipeline`** — Repeat the full agent graph `target_count` times. Each iteration runs all waves in order. Use for accumulative work: "find 50 things, one per iteration."
-
-**`sequential`** — Run agents once, chained by declaration order (unless explicit dependencies override). The default mode.
-
-**`parallel`** — Run all agents simultaneously (unless explicit dependencies impose ordering).
-
-### Dependency Resolution
-
-The orchestrator builds a DAG from `waits_for` and `reports_to`, then groups agents into **waves** using topological sort. Agents in the same wave run in parallel; waves execute in sequence.
-
-- `waits_for: [a, b]` — this agent won't start until both `a` and `b` finish
-- `reports_to: [x]` — equivalent to `x` having `waits_for: [this_agent]`
-- No explicit deps + `pipeline`/`sequential` mode — agents chain by definition declaration order
-- No explicit deps + `parallel` mode — all agents run in one wave
-- Cycles are detected and rejected before execution
-
----
-
-## Patterns
-
-### Pipeline: Iterative Accumulation
-
-Run the same agent chain N times. Each iteration builds on the previous one's output. Good for: research collection, data gathering, batch processing, iterative refinement.
+Use `pipeline` with `target_count` for accumulative work:
 
 ```yaml
 swarm:
@@ -387,187 +494,111 @@ swarm:
   workspace: ./workspace
   mode: pipeline
   target_count: 25
-  model: claude-opus-4-6
-
   agents:
     finder:
       role: researcher
       task: |
-        Find ONE new source on the topic defined in workspace/topic.md.
-
-        1. Read processed.txt to see what's already been found
-        2. Use web_search to find a new, high-quality source
-        3. Append the URL to processed.txt
-        4. Write the URL to signals/finder_out.txt: FOUND:<url>
-
+        Find one new high-quality source and append it to processed.txt.
     analyzer:
       role: analyst
-      task: |
-        Read signals/finder_out.txt for the URL.
-        Fetch the page and extract key findings.
-        Read tracking/count.txt, increment it, write back.
-        Write analysis to analyzed/item_<N>.md
-        Write to signals/analyzer_out.txt: DONE:<N>
-
-    compiler:
-      role: technical-writer
-      task: |
-        Read signals/analyzer_out.txt for the item number.
-        Read analyzed/item_<N>.md.
-        Append a summary to output/report.md under a new section.
+      task: Analyze the newest source and append findings to output/report.md.
+      waits_for:
+        - finder
 ```
 
-After 25 iterations: 25 sources found, analyzed, and compiled into a single report.
+Each iteration runs every wave in order. Results and policy history remain in the same durable state directory.
 
-### Fan-In: Parallel Specialists
+</details>
 
-Multiple agents work independently, one synthesizer combines results. Good for: multi-perspective analysis, parallel code review, comprehensive audits.
+<details>
+<summary>Parallel fan-in: independent specialists and a lead</summary>
 
 ```yaml
 swarm:
   name: codebase-audit
   workspace: ./workspace
-
+  mode: parallel
   agents:
     security:
-      role: security-auditor
-      task: |
-        Audit all code in src/ for security vulnerabilities.
-        Write findings to reports/security.md with severity ratings.
-      reports_to:
-        - lead
-
+      role: security auditor
+      task: Write reports/security.md.
+      reports_to: [lead]
     performance:
-      role: performance-analyst
-      task: |
-        Profile and analyze src/ for performance bottlenecks.
-        Write findings to reports/performance.md with benchmarks.
-      reports_to:
-        - lead
-
+      role: performance analyst
+      task: Write reports/performance.md.
+      reports_to: [lead]
     architecture:
-      role: architecture-reviewer
-      task: |
-        Review src/ for architectural issues, coupling, and tech debt.
-        Write findings to reports/architecture.md with refactoring suggestions.
-      reports_to:
-        - lead
-
+      role: architecture reviewer
+      task: Write reports/architecture.md.
+      reports_to: [lead]
     lead:
-      role: engineering-lead
-      task: |
-        Read all reports in reports/.
-        Create a prioritized action plan in output/action_plan.md.
-        Rank issues by impact and effort.
-      waits_for:
-        - security
-        - performance
-        - architecture
+      role: engineering lead
+      task: Read all reports and write output/action_plan.md.
 ```
 
-Execution: security + performance + architecture run in parallel (wave 1), lead starts after all three complete (wave 2).
+The three specialists form wave 1 and `lead` forms wave 2.
 
-### Sequential Chain: Staged Handoff
+</details>
 
-Linear progression through distinct phases. Good for: content pipelines, multi-stage processing, review chains.
+<details>
+<summary>Sequential chain: declaration-order stages</summary>
 
 ```yaml
 swarm:
   name: blog-post
   workspace: ./workspace
   mode: sequential
-
   agents:
     researcher:
       role: researcher
-      task: |
-        Research the topic in topic.md using web_search.
-        Write raw findings and source links to research/notes.md
-
+      task: Write research/notes.md.
     writer:
-      role: technical-writer
-      task: |
-        Read research/notes.md.
-        Write a complete blog post draft to drafts/post.md.
-        Include code examples where relevant.
-
+      role: technical writer
+      task: Read the notes and write drafts/post.md.
     editor:
       role: editor
-      task: |
-        Read drafts/post.md.
-        Fix grammar, improve flow, tighten prose.
-        Rewrite to drafts/post.md.
-
-    reviewer:
-      role: senior-reviewer
-      task: |
-        Read drafts/post.md.
-        Check technical accuracy against research/notes.md.
-        Add an editorial note at top if issues found, otherwise
-        copy to output/final.md.
+      task: Edit drafts/post.md in place.
 ```
 
-Execution: researcher -> writer -> editor -> reviewer, one after another.
+With no explicit `waits_for` or `reports_to` edges, `sequential` chains agents by declaration order.
 
-### Diamond: Fan-Out Then Fan-In
+</details>
 
-One planner, parallel workers, one integrator. Good for: divide-and-conquer, modular code generation, multi-file refactors.
+<details>
+<summary>Diamond: planner, parallel workers, integrator</summary>
 
 ```yaml
 swarm:
   name: feature-implementation
   workspace: ./workspace
-
   agents:
     planner:
       role: architect
-      task: |
-        Read the feature spec in spec.md.
-        Break it into independent implementation tasks.
-        Write the plan to plan.md with file assignments.
-      reports_to:
-        - api
-        - ui
-        - tests
-
+      task: Write plan.md with independent file assignments.
+      reports_to: [api, ui, tests]
     api:
-      role: backend-developer
-      task: |
-        Read plan.md for your assigned files.
-        Implement the API layer. Write to src/api/.
-      reports_to:
-        - integrator
-
+      role: backend developer
+      task: Implement the API assignment from plan.md.
+      reports_to: [integrator]
     ui:
-      role: frontend-developer
-      task: |
-        Read plan.md for your assigned files.
-        Implement the UI components. Write to src/ui/.
-      reports_to:
-        - integrator
-
+      role: frontend developer
+      task: Implement the UI assignment from plan.md.
+      reports_to: [integrator]
     tests:
-      role: test-engineer
-      task: |
-        Read plan.md for the full feature scope.
-        Write integration tests to tests/.
-      reports_to:
-        - integrator
-
+      role: test engineer
+      task: Add tests for the assignments in plan.md.
+      reports_to: [integrator]
     integrator:
-      role: tech-lead
-      task: |
-        Read plan.md and review all code in src/ and tests/.
-        Wire everything together. Fix any integration issues.
-        Run the tests and fix failures.
-        Write status to output/done.md.
+      role: tech lead
+      task: Review, integrate, and verify all changes.
 ```
 
-Execution: planner (wave 1) -> api + ui + tests in parallel (wave 2) -> integrator (wave 3).
+This produces planner (wave 1), `api` + `ui` + `tests` (wave 2), and integrator (wave 3).
 
-### Hybrid: Mixed Dependencies
+</details>
 
-Any DAG is valid. Combine patterns freely.
+<details>
+<summary>Hybrid DAG: mixed fan-out and fan-in</summary>
 
 ```yaml
 swarm:
@@ -575,153 +606,104 @@ swarm:
   workspace: ./workspace
   mode: pipeline
   target_count: 10
-
   agents:
     scraper_a:
-      role: web-scraper
-      task: |
-        Scrape data source A. Write to raw/source_a.json
-      reports_to:
-        - transformer
-
+      role: web scraper
+      task: Write raw/source_a.json.
+      reports_to: [transformer]
     scraper_b:
-      role: web-scraper
-      task: |
-        Scrape data source B. Write to raw/source_b.json
-      reports_to:
-        - transformer
-
+      role: web scraper
+      task: Write raw/source_b.json.
+      reports_to: [transformer]
     transformer:
-      role: data-engineer
-      task: |
-        Read raw/source_a.json and raw/source_b.json.
-        Clean, normalize, merge. Write to processed/merged.json
-      reports_to:
-        - loader
-        - validator
-
+      role: data engineer
+      task: Merge both raw files into processed/merged.json.
+      reports_to: [loader, validator]
     validator:
-      role: qa-analyst
-      task: |
-        Read processed/merged.json.
-        Validate schema, check for anomalies.
-        Write report to qa/validation.md
-
+      role: QA analyst
+      task: Validate processed/merged.json and write qa/validation.md.
     loader:
-      role: data-engineer
-      task: |
-        Read processed/merged.json.
-        Append to output/dataset.jsonl
+      role: data engineer
+      task: Append processed/merged.json to output/dataset.jsonl.
 ```
 
-Execution per iteration: scraper_a + scraper_b (wave 1) -> transformer (wave 2) -> loader + validator (wave 3).
+The dependency graph, not the visual order of the YAML, determines the waves. Cycles are rejected before execution.
 
----
+</details>
 
-## Writing Agent Tasks
+<details>
+<summary>Writing agent tasks and workspace protocols</summary>
 
-### What Agents Can Do
+Each declared worker receives a full oh-my-pi execution environment in the configured workspace. Agents communicate through the shared filesystem; the orchestrator does not automatically pass arbitrary output text between agents.
 
-Each agent is a full oh-my-pi session. It can:
+Useful protocols include:
 
-- **bash/python**: Run commands, scripts, install packages, process data
-- **read/write/edit**: Create and modify files in the workspace
-- **grep/find**: Search the workspace (or anywhere on disk)
-- **web_search**: Search the internet (via configured provider)
-- **fetch**: Download web pages, APIs, documents
-- **browser**: Navigate websites, scrape dynamic content, take screenshots
+- **Signal files:** `signals/worker_out.txt` containing a short parseable status such as `DONE:42`.
+- **Structured artifacts:** `reports/security.md`, `results/report.json`, or another durable output path.
+- **Tracking files:** `processed.txt`, `tracking/count.txt`, and `tracking/status.json` to make pipeline iterations idempotent.
 
-### Inter-Agent Communication
+Reliable task prompts should name exact paths, tell agents how to handle failure, avoid duplicate work, and scope each worker to one clear objective.
 
-The orchestrator starts and stops agents in the right order. It does **not** pass data between them. Agents communicate through files in the shared workspace.
+</details>
 
-Design your own protocol. Common patterns:
+<details>
+<summary>Model selection and precedence</summary>
 
-**Signal files** — lightweight status flags an agent writes when done:
-
-```
-signals/finder_out.txt    -> "FOUND:https://example.com"
-signals/analyzer_out.txt  -> "DONE:42"
-signals/reviewer_out.txt  -> "APPROVED" or "REJECTED:reason"
-```
-
-**Structured output** — detailed results other agents read:
-
-```
-analyzed/item_1.md        -> Full analysis document
-results/report.json       -> Machine-readable data
-output/final.docx         -> Accumulated deliverable
-```
-
-**Tracking files** — prevent duplicate work across pipeline iterations:
-
-```
-processed.txt             -> Items already handled (one per line)
-tracking/count.txt        -> Current item counter
-tracking/status.json      -> Cumulative state
-```
-
-### Tips for Reliable Agents
-
-- **Be explicit about paths.** Agents start fresh each iteration — they don't remember previous runs. Tell them exactly where to read input and write output.
-- **Check existing state.** In pipeline mode, tell agents to read tracking files before doing work: "Read processed.txt to avoid duplicates."
-- **Use numbered outputs.** `item_1.md`, `item_2.md` etc. so iterations don't clobber each other.
-- **Handle failure.** Tell agents what to do when things go wrong: "If the source lacks depth, write SKIP to signals/out.txt and explain why."
-- **Keep signal files simple.** One line, parseable format. Complex data goes in structured output files.
-- **Scope the task tightly.** An agent that tries to do five things will do zero well. One clear objective per agent.
-
----
-
-## Models
-
-Any model configured in omp works. Set a swarm default and optionally override per agent:
+Any model ID configured in oh-my-pi may be used:
 
 ```yaml
 swarm:
+  name: writing-team
+  workspace: ./workspace
   model: claude-opus-4-6
   agents:
     writer:
-      role: technical-writer
-      task: |
-        Write the draft.
+      role: technical writer
+      task: Write the draft.
     reviewer:
       role: reviewer
       model: claude-sonnet-4-5
-      task: |
-        Review the draft.
+      task: Review the draft.
 ```
 
-Precedence: `agents.<name>.model` → `swarm.model` → session default. Check `packages/ai/src/models.json` for available model IDs.
+Precedence is `agents.<name>.model` → `swarm.model` → the OMP session default. Shortleash does not ship or validate a model catalog.
 
----
+</details>
 
 ## Architecture
 
+```text
+src/
+  extension.ts                 OMP TUI command, dashboard, and Beads hook registration
+  cli.ts                       standalone runner, plan/status/evaluate/reconcile/dashboard commands
+  index.ts                     public TypeScript exports
+  beads/
+    client.ts                  bounded argv/JSON Beads helpers
+    hooks.ts                   direct bd command validation, show cards, and claim delegation
+    render.ts                  Beads call/result rendering
+  orchestration/
+    definition/
+      schema.ts                JSON/YAML parsing, normalization, and validation
+      metadata.ts              Beads metadata schema and validation
+      plan.ts                  input resolution, plugin loading, and executable plan
+      manifest.ts              durable run manifest and definition fingerprint
+    execution/
+      dag.ts                   dependency graph, cycle detection, topological waves
+      executor.ts              OMP worker execution and worktree isolation
+      pipeline.ts              iteration loop, policy boundaries, and projection
+      state.ts                 atomic filesystem state, locks, history, and recovery
+      auto.ts                  claimed-Bead run lifecycle
+      concurrency.ts           bounded asynchronous work
+      signals.ts               cancellation and timeout scopes
+    policy/
+      plugins.ts               plugin discovery, registration, captures, and evaluation
+      policy-types.ts           durable check/evaluation result contracts
+    adapters/
+      beads.ts                 Beads input, lifecycle projection, and reconciliation
+      herdr.ts                 Herdr tab and agent-pane execution adapter
+    presentation/
+      dashboard.ts              TUI widget and dashboard overlay
+      graph.ts                  dependency graph rendering
+      render.ts                 progress and terminal rendering
 ```
-src/extension.ts                 TUI entry point (registers /shortleash command)
-src/cli.ts                       Standalone runner (no TUI, no timeout)
-src/orchestration/
-  definition/
-    schema.ts                    JSON/YAML parsing, normalization, and validation
-    metadata.ts                  Beads metadata schema and validation
-    plan.ts                      Input resolution, plugin loading, and executable plan
-    manifest.ts                   Durable run manifest and definition fingerprint
-  execution/
-    dag.ts                       Dependency graph, cycle detection, topological sort
-    executor.ts                  Spawns agents via oh-my-pi's runSubprocess
-    pipeline.ts                  Iteration loop, policy boundaries, and projection
-    state.ts                     Atomic filesystem state, run lock, history, and recovery
-    auto.ts                      Claimed-Bead run lifecycle
-    concurrency.ts               Bounded asynchronous work
-    signals.ts                   Cancellation and timeout scopes
-  policy/
-    plugins.ts                   Code-defined policy registry and structured evaluations
-    policy-types.ts              Shared policy result contracts
-  adapters/
-    beads.ts                     Workflow input, lifecycle projection, and drift reconciliation
-    herdr.ts                     Herdr tab and agent-pane execution adapter
-  presentation/
-src/beads/
-  client.ts                      Bounded argv/JSON Beads client for internal reads
-  hooks.ts                       Bash command validation, cards, and claim delegation
-```
+
