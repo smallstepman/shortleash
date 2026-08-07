@@ -12,6 +12,12 @@ Requirements:
 - oh-my-pi `^17` when loading the extension in the TUI.
 - Herdr is optional at runtime. It is used by default for declared-agent TUI runs when available.
 
+Install the extension directly from GitHub:
+
+```bash
+omp install git:github.com/smallstepman/shortleash
+```
+
 From this repository root:
 
 ```bash
@@ -433,7 +439,7 @@ Inline values are decoded as strings, finite numbers, booleans, or `null`. Param
 Plugin modules default-export `defineSwarmPlugin(...)` or a compatible plugin factory:
 
 ```ts
-import { defineSwarmPlugin } from "@oh-my-pi/shortleash/plugin";
+import { defineSwarmPlugin } from "shortleash/plugin";
 
 export default defineSwarmPlugin({
   name: "obligations",
