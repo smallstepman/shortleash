@@ -4,8 +4,8 @@
 
 interface RawShortleashAgentConfig {
 	[key: string]: unknown;
+	agent?: unknown;
 	role?: unknown;
-	task?: unknown;
 	extra_context?: unknown;
 	reports_to?: unknown;
 	waits_for?: unknown;
@@ -50,6 +50,8 @@ export type ShortleashIsolationMode = "none" | "worktree";
 
 export interface ShortleashAgent {
 	name: string;
+	/** OMP-native agent profile name; omitted uses the host's default task agent. */
+	agent?: string;
 	role: string;
 	task: string;
 	extraContext?: string;
@@ -107,13 +109,13 @@ export const RAW_SHORTLEASH_KEYS: ReadonlySet<string> = new Set([
 	"agents",
 ]);
 export const RAW_AGENT_KEYS: ReadonlySet<string> = new Set([
+	"agent",
 	"role",
 	"task",
 	"extra_context",
 	"reports_to",
 	"waits_for",
 	"model",
-	"isolation",
 	"workspace_isolation",
 	"inherit_history",
 	"history",
@@ -336,6 +338,7 @@ export function parseShortleash(content: string): ShortleashDefinition {
 		agentOrder.push(agentName);
 		agents.set(agentName, {
 			name: agentName,
+			agent: parseOptionalString(config.agent, `swarm.agents.${agentName}.agent`),
 			role,
 			task: agentTask,
 			extraContext: parseOptionalString(config.extra_context, `swarm.agents.${agentName}.extra_context`),
@@ -437,6 +440,7 @@ export function serializeShortleashDefinition(definition: ShortleashDefinition):
 			const agent = definition.agents.get(name)!;
 			return {
 				name: agent.name,
+				agent: agent.agent,
 				role: agent.role,
 				task: agent.task,
 				extraContext: agent.extraContext,

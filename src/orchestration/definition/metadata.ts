@@ -41,6 +41,7 @@ const agentJsonSchema = {
 	required: ["role", "task"],
 	additionalProperties: false,
 	properties: {
+		agent: { type: "string", minLength: 1 },
 		role: { type: "string", minLength: 1 },
 		task: { type: "string", minLength: 1 },
 		extra_context: { type: "string" },
@@ -169,9 +170,9 @@ function validateRawShortleashConfig(value: Record<string, unknown>, field: stri
 
 function validateRawAgentConfig(value: Record<string, unknown>, field: string): void {
 	assertKnownKeys(value, RAW_AGENT_KEYS, field);
+	assertString(value.agent, `${field}.agent`);
 	assertString(value.role, `${field}.role`, { required: true });
 	assertString(value.task, `${field}.task`, { required: true });
-	assertString(value.extra_context, `${field}.extra_context`);
 	assertStringArray(value.reports_to, `${field}.reports_to`);
 	assertStringArray(value.waits_for, `${field}.waits_for`);
 	assertString(value.model, `${field}.model`);

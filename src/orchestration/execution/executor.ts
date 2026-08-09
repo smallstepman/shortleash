@@ -1,30 +1,22 @@
 /**
- * Shortleash agent execution via oh-my-pi's subagent infrastructure.
+ * Shortleash agent execution through oh-my-pi's structured subagent infrastructure.
  *
- * Wraps `runSubprocess` to spawn individual Shortleash agents with full tool access.
- * Each agent runs in the Shortleash workspace with its task instructions as the user prompt.
+ * OMP owns agent discovery, session construction, tool policy, and isolation;
+ * Shortleash owns graph scheduling, policy evaluation, persistence, and retries.
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { Message } from "@oh-my-pi/pi-ai";
-import type {
-	AgentDefinition,
-	AgentProgress,
-	AgentSource,
-	ModelRegistry,
-	Settings,
-	SingleResult,
-} from "@oh-my-pi/pi-coding-agent";
-import { runSubagentFollowUpTurn, runSubprocess } from "@oh-my-pi/pi-coding-agent";
+import type { AgentProgress, ModelRegistry, SingleResult } from "@oh-my-pi/pi-coding-agent";
+import { runSubagentFollowUpTurn } from "@oh-my-pi/pi-coding-agent";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
-	applyEligibleNestedPatches,
-	mergeIsolatedChanges,
-	prepareIsolationContext,
-	runIsolatedSubprocess,
-} from "@oh-my-pi/pi-coding-agent/task/isolation-runner";
-import { parseIsolationMode } from "@oh-my-pi/pi-coding-agent/task/worktree";
+	runStructuredSubagent,
+	type StructuredSubagentResult,
+} from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import type { ShortleashAgent, ShortleashDefinition, ShortleashIsolationMode } from "../definition/schema";
 import type { StateTracker } from "./state";
 
@@ -45,48 +37,33 @@ export interface ShortleashExecutorOptions {
 	stateTracker: StateTracker;
 	/** Return corrective feedback when the agent's finalization attempt is rejected. */
 	onFinalize?: (result: SingleResult, attempt: number) => Promise<string | undefined>;
-	/** Number of same-session follow-up turns allowed after a rejected finalization. */
+	/** Number of corrective turns allowed after a rejected finalization. */
 	maxFinalizeAttempts?: number;
 }
 
-const isolationMergeTails = new Map<string, Promise<void>>();
-
-async function withIsolationMergeLock<T>(repoRoot: string, operation: () => Promise<T>): Promise<T> {
-	const previous = isolationMergeTails.get(repoRoot) ?? Promise.resolve();
-	let release!: () => void;
-	const gate = new Promise<void>(resolve => {
-		release = resolve;
-	});
-	const queued = previous.then(() => gate);
-	isolationMergeTails.set(repoRoot, queued);
-	await previous;
-	try {
-		return await operation();
-	} finally {
-		release();
-		if (isolationMergeTails.get(repoRoot) === queued) isolationMergeTails.delete(repoRoot);
-	}
-}
 function isPersistableMessage(message: AgentMessage): message is Message {
 	return message.role === "user" || message.role === "assistant" || message.role === "toolResult";
 }
 
-async function materializeParentHistory(
+function safeSessionDirectoryName(value: string): string {
+	const sanitized = value.replace(/[^a-zA-Z0-9._-]/g, "_");
+	return sanitized || "agent";
+}
+
+async function createChildSessionFile(
 	workspace: string,
-	artifactsDir: string,
+	sessionDirectory: string,
 	messages: readonly AgentMessage[],
-): Promise<string | undefined> {
-	const persistableMessages = messages.filter(isPersistableMessage);
-	if (persistableMessages.length === 0) return undefined;
-	await fs.mkdir(artifactsDir, { recursive: true });
-	const manager = SessionManager.create(workspace, artifactsDir);
+): Promise<string> {
+	await fs.mkdir(sessionDirectory, { recursive: true });
+	const manager = SessionManager.create(workspace, sessionDirectory);
 	const sessionFile = manager.getSessionFile();
 	if (!sessionFile) {
 		await manager.close();
-		throw new Error("Parent history inheritance could not create a durable child session.");
+		throw new Error("Structured Shortleash execution could not create a durable child session.");
 	}
 	try {
-		for (const message of persistableMessages) {
+		for (const message of messages.filter(isPersistableMessage)) {
 			manager.appendMessage(structuredClone(message));
 		}
 		await manager.ensureOnDisk();
@@ -97,75 +74,55 @@ async function materializeParentHistory(
 	}
 }
 
-function makeIsolationFailureResult(
-	agent: AgentDefinition,
-	index: number,
-	id: string,
-	task: string,
-	error: unknown,
-): SingleResult {
-	const message = error instanceof Error ? error.message : String(error);
+async function createWorkerSettings(
+	settings: Settings | undefined,
+	workspace: string,
+	workspaceIsolation: ShortleashIsolationMode | undefined,
+): Promise<Settings> {
+	const workerSettings = settings ? await settings.cloneForCwd(workspace) : Settings.isolated();
+	if (workspaceIsolation === "worktree") {
+		// The native isolation API selects the concrete copy-on-write backend from
+		// "auto"; Shortleash's worktree mode remains the user-facing abstraction.
+		workerSettings.override("task.isolation.mode", "auto");
+		workerSettings.override("task.isolation.merge", "patch");
+		workerSettings.override("task.isolation.apply", true);
+	}
+	return workerSettings;
+}
+
+function createWorkerToolSession(
+	options: ShortleashExecutorOptions,
+	settings: Settings,
+	sessionFile: string,
+): ToolSession {
+	const artifactsDir = sessionFile.slice(0, -".jsonl".length);
 	return {
-		index,
-		id,
-		agent: agent.name,
-		agentSource: agent.source,
-		task,
-		exitCode: 1,
-		output: "",
-		stderr: message,
-		truncated: false,
-		durationMs: 0,
-		tokens: 0,
-		requests: 0,
-		error: message,
+		cwd: options.workspace,
+		hasUI: false,
+		suppressSpawnAdvisory: true,
+		enableLsp: false,
+		enableIrc: false,
+		enableMCP: false,
+		getSessionFile: () => sessionFile,
+		getArtifactsDir: () => artifactsDir,
+		getSessionSpawns: () => null,
+		getModelString: () => options.modelOverride,
+		getActiveModelString: () => options.modelOverride,
+		modelRegistry: options.modelRegistry,
+		settings,
 	};
 }
 
-async function runWorker(
-	baseOptions: Parameters<typeof runSubprocess>[0],
-	agent: AgentDefinition,
-	index: number,
-	id: string,
-	task: string,
-	workspaceIsolation: ShortleashIsolationMode | undefined,
-): Promise<SingleResult> {
-	if (workspaceIsolation !== "worktree") return runSubprocess(baseOptions);
+function normalizeShortleashResult(result: SingleResult, agentName: string): SingleResult {
+	return result.agent === agentName ? result : { ...result, agent: agentName };
+}
 
-	const context = await prepareIsolationContext(baseOptions.cwd);
-	const result = await runIsolatedSubprocess({
-		baseOptions,
-		context,
-		preferredBackend: parseIsolationMode("worktree"),
-		agentId: id,
-		mergeMode: "patch",
-		artifactsDir: baseOptions.artifactsDir ?? path.join(baseOptions.cwd, ".shortleash-context"),
-		description: baseOptions.description,
-		buildFailureResult: error => makeIsolationFailureResult(agent, index, id, task, error),
-	});
-	if (result.exitCode !== 0 || result.error || result.aborted) return result;
-
-	const mergeOutcome = await withIsolationMergeLock(context.repoRoot, () =>
-		mergeIsolatedChanges({
-			result,
-			repoRoot: context.repoRoot,
-			mergeMode: "patch",
-		}),
-	);
-	let mergeSummary = mergeOutcome.summary;
-	if (mergeOutcome.changesApplied !== false) {
-		mergeSummary += await applyEligibleNestedPatches({
-			result,
-			repoRoot: context.repoRoot,
-			mergeMode: "patch",
-			changesApplied: mergeOutcome.changesApplied,
-			mergedBranchForNestedPatches: mergeOutcome.mergedBranchForNestedPatches,
-		});
-	}
+function applyStructuredMergeResult(execution: StructuredSubagentResult, agentName: string): SingleResult {
+	const { result: rawResult, mergeSummary, changesApplied } = execution;
+	const result = normalizeShortleashResult(rawResult, agentName);
 	if (!mergeSummary) return result;
-
 	const output = result.output ? `${result.output}\n${mergeSummary}` : mergeSummary;
-	if (mergeOutcome.changesApplied === false) {
+	if (changesApplied === false) {
 		const error = result.error ?? "Isolation merge failed; changes were not applied.";
 		return {
 			...result,
@@ -179,30 +136,21 @@ async function runWorker(
 }
 
 /**
- * Execute a single Shortleash agent as an oh-my-pi subagent.
+ * Execute a single Shortleash agent through OMP's structured subagent API.
  *
- * The agent receives:
- * - System prompt: built from role + extra_context
- * - User prompt (task): the full task instructions from the JSON definition
- * - Working directory: the Shortleash workspace
- * - Full tool access (bash, python, read, write, edit, grep, find, fetch, web_search, browser)
+ * Shortleash still owns graph scheduling, policy evaluation, persistence, and
+ * corrective feedback. OMP owns agent discovery, session construction, tool
+ * policy, output finalization, and optional workspace isolation.
  */
 export async function executeShortleashAgent(
 	agent: ShortleashAgent,
 	index: number,
 	options: ShortleashExecutorOptions,
 ): Promise<SingleResult> {
-	const { workspace, shortleashName, modelOverride, signal, modelRegistry, settings, stateTracker } = options;
-
+	const { workspace, shortleashName, modelOverride, signal, settings, stateTracker } = options;
 	const agentId = `shortleash-${shortleashName}-${agent.name}`;
-	const artifactsDir = path.join(stateTracker.shortleashDir, "context");
+	const sessionDirectory = path.join(stateTracker.shortleashDir, "context", safeSessionDirectoryName(agentId));
 
-	const agentDef: AgentDefinition = {
-		name: agent.name,
-		description: `Shortleash agent: ${agent.role}`,
-		systemPrompt: buildSystemPrompt(agent),
-		source: "project" as AgentSource,
-	};
 	const handleProgress = (progress: AgentProgress): void => {
 		void stateTracker.updateAgent(agent.name, {
 			currentTool: progress.currentTool,
@@ -220,6 +168,38 @@ export async function executeShortleashAgent(
 	await stateTracker.appendLog(agent.name, "Starting agent");
 
 	try {
+		if (options.inheritHistory && options.parentMessages === undefined) {
+			throw new Error("Parent history inheritance requires an interactive OMP session.");
+		}
+		const sessionFile = await createChildSessionFile(
+			workspace,
+			sessionDirectory,
+			options.inheritHistory ? (options.parentMessages ?? []) : [],
+		);
+		const workerSettings = await createWorkerSettings(settings, workspace, options.workspaceIsolation);
+		const workerSession = createWorkerToolSession(options, workerSettings, sessionFile);
+		const isolation =
+			options.workspaceIsolation === "worktree"
+				? { requested: true, merge: "patch" as const, apply: true }
+				: undefined;
+		const initialExecution = await runStructuredSubagent({
+			session: workerSession,
+			invocationKind: "task",
+			assignment: agent.task,
+			context: buildAgentContext(agent),
+			agent: agent.agent,
+			model: modelOverride,
+			identity: { id: agentId, label: agent.name },
+			index,
+			isolation,
+			retainArtifacts: true,
+			keepAlive: true,
+			enableLsp: false,
+			enableIrc: false,
+			signal,
+			onProgress: handleProgress,
+		});
+
 		const recordResult = async (result: SingleResult, attempt: number): Promise<void> => {
 			const status = result.exitCode === 0 ? ("completed" as const) : ("failed" as const);
 			await stateTracker.updateAgent(agent.name, {
@@ -235,32 +215,24 @@ export async function executeShortleashAgent(
 			);
 		};
 
-		if (options.inheritHistory && options.parentMessages === undefined) {
-			throw new Error("Parent history inheritance requires an interactive OMP session.");
-		}
-		const sessionFile =
-			options.inheritHistory && options.parentMessages
-				? await materializeParentHistory(workspace, artifactsDir, options.parentMessages)
-				: undefined;
-		const baseOptions = {
-			cwd: workspace,
-			agent: agentDef,
-			task: agent.task,
-			index,
-			id: agentId,
-			modelOverride,
-			signal,
-			onProgress: handleProgress,
-			modelRegistry,
-			settings,
-			enableLsp: false,
-			keepAlive: true,
-			sessionFile,
-			artifactsDir,
-		} satisfies Parameters<typeof runSubprocess>[0];
-		let result = await runWorker(baseOptions, agentDef, index, agentId, agent.task, options.workspaceIsolation);
+		let result = applyStructuredMergeResult(initialExecution, agent.name);
 		await recordResult(result, 0);
 		const maxFinalizeAttempts = Math.max(0, Math.trunc(options.maxFinalizeAttempts ?? 3));
+		const followUpSchema =
+			initialExecution.policy.schema.source === "none"
+				? {}
+				: {
+						outputSchema: initialExecution.policy.schema.schema,
+						outputSchemaMode: initialExecution.policy.schema.mode,
+						outputSchemaSource: initialExecution.policy.schema.source,
+					};
+		const retrySchema =
+			initialExecution.policy.schema.source !== "caller"
+				? {}
+				: {
+						outputSchema: initialExecution.policy.schema.schema,
+						schemaMode: initialExecution.policy.schema.mode,
+					};
 		let lastFeedback: string | undefined;
 		for (let attempt = 0; attempt < maxFinalizeAttempts; attempt++) {
 			const feedback = await options.onFinalize?.(result, attempt);
@@ -275,15 +247,42 @@ export async function executeShortleashAgent(
 				agent.name,
 				`Finalization rejected; continuing with corrective feedback (attempt ${attempt + 1})`,
 			);
-			result = await runSubagentFollowUpTurn({
-				id: agentId,
-				agent: agentDef,
-				message: feedback,
-				index,
-				signal,
-				onProgress: handleProgress,
-				artifactsDir,
-			});
+			if (options.workspaceIsolation === "worktree") {
+				// OMP intentionally parks isolated sessions after each turn. Reopen
+				// the same child journal in a fresh isolated turn so corrections
+				// retain the full transcript and still merge their patch.
+				const retryExecution = await runStructuredSubagent({
+					session: workerSession,
+					invocationKind: "task",
+					assignment: feedback,
+					context: buildAgentContext(agent),
+					agent: agent.agent,
+					model: modelOverride,
+					identity: { id: `${agentId}-retry-${attempt + 1}`, label: agent.name },
+					index,
+					isolation,
+					...retrySchema,
+					retainArtifacts: true,
+					keepAlive: false,
+					enableLsp: false,
+					enableIrc: false,
+					signal,
+					onProgress: handleProgress,
+				});
+				result = applyStructuredMergeResult(retryExecution, agent.name);
+			} else {
+				const followUpResult = await runSubagentFollowUpTurn({
+					id: agentId,
+					agent: initialExecution.policy.effectiveAgent,
+					message: feedback,
+					index,
+					signal,
+					onProgress: handleProgress,
+					artifactsDir: initialExecution.artifactsDir,
+					...followUpSchema,
+				});
+				result = normalizeShortleashResult(followUpResult, agent.name);
+			}
 			await recordResult(result, attempt + 1);
 		}
 
@@ -305,7 +304,7 @@ export async function executeShortleashAgent(
 	}
 }
 
-function buildSystemPrompt(agent: ShortleashAgent): string {
+function buildAgentContext(agent: ShortleashAgent): string {
 	const parts = [`You are a ${agent.role}.`];
 	if (agent.extraContext) {
 		parts.push(agent.extraContext);

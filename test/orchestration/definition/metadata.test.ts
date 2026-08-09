@@ -12,6 +12,7 @@ const validMetadata = {
 		workspace: ".",
 		agents: {
 			discover: {
+				agent: "scout",
 				role: "investigator",
 				task: "Inspect the repository.",
 				waits_for: [],
@@ -37,6 +38,7 @@ describe("Beads Shortleash metadata schema", () => {
 	it("validates the standard metadata.shortleash shape and ignores sibling metadata", () => {
 		const definition = validateShortleashMetadata(validMetadata);
 		expect(definition.name).toBe("metadata-schema");
+		expect(definition.agents.get("discover")?.agent).toBe("scout");
 		expect([...definition.agents.keys()]).toEqual(["discover", "implement"]);
 		expect(hasShortleashMetadata(JSON.stringify(validMetadata))).toBe(true);
 	});

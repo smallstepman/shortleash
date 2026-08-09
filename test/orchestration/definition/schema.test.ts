@@ -14,6 +14,7 @@ const jsonDefinition = JSON.stringify({
 		evals: [{ path: "./policies/evaluator.ts" }],
 		agents: {
 			discover: {
+				agent: "scout",
 				role: "investigator",
 				task: "Inspect the repository.",
 				extra_context: "Record evidence.",
@@ -34,7 +35,12 @@ const jsonDefinition = JSON.stringify({
 
 describe("Shortleash definition JSON", () => {
 	it("parses JSON definitions", () => {
+		expect(parseShortleash(jsonDefinition).agents.get("discover")?.agent).toBe("scout");
 		expect(parseShortleash(jsonDefinition).name).toBe("format-equivalence");
+		const serialized = serializeShortleashDefinition(parseShortleash(jsonDefinition));
+		expect(serialized.agents).toEqual(
+			expect.arrayContaining([expect.objectContaining({ name: "discover", agent: "scout" })]),
+		);
 	});
 
 	it("rejects non-JSON definitions", () => {

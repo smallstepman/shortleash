@@ -4,11 +4,37 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as taskExecutor from "@oh-my-pi/pi-coding-agent";
 import { type ModelRegistry, Settings, type SingleResult } from "@oh-my-pi/pi-coding-agent";
+import type { StructuredSubagentResult } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
+import * as structuredExecutor from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
 import { parseShortleash } from "../../../src/orchestration/definition/schema";
 import { buildDependencyGraph, buildExecutionWaves } from "../../../src/orchestration/execution/dag";
 import { PipelineController } from "../../../src/orchestration/execution/pipeline";
 import { StateTracker } from "../../../src/orchestration/execution/state";
 import { ShortleashPolicyRegistry } from "../../../src/orchestration/policy/policies";
+
+function structuredExecution(result: SingleResult): StructuredSubagentResult {
+	return {
+		result,
+		policy: {
+			effectiveAgent: {
+				name: "task",
+				description: "test",
+				systemPrompt: "test",
+				source: "bundled",
+			},
+			schema: {
+				schema: undefined,
+				source: "none",
+				mode: "permissive",
+				outputSchemaOverridesAgent: false,
+			},
+		},
+		mergeSummary: "",
+		changesApplied: null,
+		artifactsDir: path.join(workspace, "artifacts"),
+		temporaryArtifacts: false,
+	} as unknown as StructuredSubagentResult;
+}
 
 let workspace: string;
 function policyPath(name: string): string {
@@ -75,7 +101,7 @@ describe("pipeline agent guardrails", () => {
 			tokens: 0,
 			requests: 0,
 		};
-		vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValue(result);
+		vi.spyOn(structuredExecutor, "runStructuredSubagent").mockResolvedValue(structuredExecution(result));
 
 		const policyRegistry = new ShortleashPolicyRegistry();
 		policyRegistry.register(policyPath("block"), {
@@ -131,7 +157,9 @@ describe("pipeline agent guardrails", () => {
 			requests: 0,
 		};
 		const correctedResult = { ...initialResult, id: "worker-corrected", output: "corrected" };
-		const runSubprocessSpy = vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValue(initialResult);
+		const structuredSpy = vi
+			.spyOn(structuredExecutor, "runStructuredSubagent")
+			.mockResolvedValue(structuredExecution(initialResult));
 		const followUpSpy = vi.spyOn(taskExecutor, "runSubagentFollowUpTurn").mockResolvedValue(correctedResult);
 
 		const policyRegistry = new ShortleashPolicyRegistry();
@@ -160,8 +188,8 @@ describe("pipeline agent guardrails", () => {
 
 		expect(pipelineResult.status).toBe("completed");
 		expect(evaluations).toBe(2);
-		expect(runSubprocessSpy).toHaveBeenCalledTimes(1);
-		expect(runSubprocessSpy.mock.calls[0][0].keepAlive).toBe(true);
+		expect(structuredSpy).toHaveBeenCalledTimes(1);
+		expect(structuredSpy.mock.calls[0][0].keepAlive).toBe(true);
 		expect(followUpSpy.mock.calls[0][0]).toMatchObject({
 			id: "shortleash-finalization-policy-pipeline-worker",
 			message: expect.stringContaining("finalization was rejected"),
@@ -221,7 +249,7 @@ describe("pipeline resume", () => {
 		};
 		await stateTracker.recordResult("worker", 0, persistedResult);
 		await stateTracker.updatePipeline({ status: "failed", completedAt: Date.now() });
-		const runSubprocessSpy = vi.spyOn(taskExecutor, "runSubprocess");
+		const structuredSpy = vi.spyOn(structuredExecutor, "runStructuredSubagent");
 
 		const result = await new PipelineController(definition, waves, stateTracker).run({
 			workspace,
@@ -231,7 +259,7 @@ describe("pipeline resume", () => {
 
 		expect(result.status).toBe("completed");
 		expect(result.agentResults.get("worker")).toEqual([persistedResult]);
-		expect(runSubprocessSpy).not.toHaveBeenCalled();
+		expect(structuredSpy).not.toHaveBeenCalled();
 	});
 });
 
@@ -258,19 +286,19 @@ describe("pipeline failure and cancellation semantics", () => {
 		let startedCount = 0;
 		const started = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
+		vi.spyOn(structuredExecutor, "runStructuredSubagent").mockImplementation(async request => {
 			active += 1;
 			peak = Math.max(peak, active);
 			startedCount += 1;
 			if (startedCount === 1) started.resolve();
 			await release.promise;
 			active -= 1;
-			return {
-				index: options.index,
-				id: options.id,
-				agent: options.agent.name,
-				agentSource: "project" as const,
-				task: options.task,
+			return structuredExecution({
+				index: request.index ?? 0,
+				id: request.identity?.id ?? "worker",
+				agent: request.identity?.label ?? "task",
+				agentSource: "project",
+				task: request.assignment,
 				exitCode: 0,
 				output: "",
 				stderr: "",
@@ -278,7 +306,7 @@ describe("pipeline failure and cancellation semantics", () => {
 				durationMs: 1,
 				tokens: 0,
 				requests: 0,
-			};
+			});
 		});
 
 		const run = new PipelineController(definition, waves, stateTracker).run({
@@ -311,15 +339,15 @@ describe("pipeline failure and cancellation semantics", () => {
 		const stateTracker = new StateTracker(workspace, definition.name);
 		await stateTracker.init([...definition.agents.keys()]);
 		const calls: string[] = [];
-		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
-			const agentName = options.agent.name;
+		vi.spyOn(structuredExecutor, "runStructuredSubagent").mockImplementation(async request => {
+			const agentName = request.identity?.label ?? "task";
 			calls.push(agentName);
-			return {
-				index: options.index,
-				id: options.id,
+			return structuredExecution({
+				index: request.index ?? 0,
+				id: request.identity?.id ?? agentName,
 				agent: agentName,
-				agentSource: "project" as const,
-				task: options.task,
+				agentSource: "project",
+				task: request.assignment,
 				exitCode: agentName === "root" ? 1 : 0,
 				output: "",
 				stderr: agentName === "root" ? "failed" : "",
@@ -328,7 +356,7 @@ describe("pipeline failure and cancellation semantics", () => {
 				tokens: 0,
 				requests: 0,
 				error: agentName === "root" ? "failed" : undefined,
-			};
+			});
 		});
 
 		const result = await new PipelineController(definition, waves, stateTracker).run({
@@ -359,23 +387,24 @@ describe("pipeline failure and cancellation semantics", () => {
 		const stateTracker = new StateTracker(workspace, definition.name);
 		await stateTracker.init([...definition.agents.keys()]);
 		const calls: string[] = [];
-		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
-			calls.push(options.agent.name);
-			return {
-				index: options.index,
-				id: options.id,
-				agent: options.agent.name,
-				agentSource: "project" as const,
-				task: options.task,
-				exitCode: options.agent.name === "root" ? 1 : 0,
+		vi.spyOn(structuredExecutor, "runStructuredSubagent").mockImplementation(async request => {
+			const agentName = request.identity?.label ?? "task";
+			calls.push(agentName);
+			return structuredExecution({
+				index: request.index ?? 0,
+				id: request.identity?.id ?? agentName,
+				agent: agentName,
+				agentSource: "project",
+				task: request.assignment,
+				exitCode: agentName === "root" ? 1 : 0,
 				output: "",
 				stderr: "",
 				truncated: false,
 				durationMs: 1,
 				tokens: 0,
 				requests: 0,
-				error: options.agent.name === "root" ? "failed" : undefined,
-			};
+				error: agentName === "root" ? "failed" : undefined,
+			});
 		});
 
 		const result = await new PipelineController(definition, waves, stateTracker).run({
@@ -400,18 +429,18 @@ describe("pipeline failure and cancellation semantics", () => {
 				},
 			}),
 		);
+		const abortController = new AbortController();
 		const waves = buildExecutionWaves(buildDependencyGraph(definition));
 		const stateTracker = new StateTracker(workspace, definition.name);
 		await stateTracker.init(["worker"]);
-		const abortController = new AbortController();
-		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
+		vi.spyOn(structuredExecutor, "runStructuredSubagent").mockImplementation(async request => {
 			abortController.abort();
-			return {
-				index: options.index,
-				id: options.id,
-				agent: "worker",
-				agentSource: "project" as const,
-				task: options.task,
+			return structuredExecution({
+				index: request.index ?? 0,
+				id: request.identity?.id ?? "worker",
+				agent: request.identity?.label ?? "worker",
+				agentSource: "project",
+				task: request.assignment,
 				exitCode: 1,
 				output: "",
 				stderr: "cancelled",
@@ -421,7 +450,7 @@ describe("pipeline failure and cancellation semantics", () => {
 				requests: 0,
 				aborted: true,
 				error: "cancelled",
-			};
+			});
 		});
 
 		const result = await new PipelineController(definition, waves, stateTracker).run({
@@ -450,20 +479,22 @@ it("keeps cancellation terminal when completion evaluation returns", async () =>
 	const waves = buildExecutionWaves(buildDependencyGraph(definition));
 	const stateTracker = new StateTracker(workspace, definition.name);
 	await stateTracker.init(["worker"]);
-	vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValue({
-		index: 0,
-		id: "worker-result",
-		agent: "worker",
-		agentSource: "project",
-		task: "finish",
-		exitCode: 0,
-		output: "done",
-		stderr: "",
-		truncated: false,
-		durationMs: 1,
-		tokens: 0,
-		requests: 0,
-	});
+	vi.spyOn(structuredExecutor, "runStructuredSubagent").mockResolvedValue(
+		structuredExecution({
+			index: 0,
+			id: "worker-result",
+			agent: "worker",
+			agentSource: "project",
+			task: "finish",
+			exitCode: 0,
+			output: "done",
+			stderr: "",
+			truncated: false,
+			durationMs: 1,
+			tokens: 0,
+			requests: 0,
+		}),
+	);
 
 	const abortController = new AbortController();
 	const policyRegistry = new ShortleashPolicyRegistry();

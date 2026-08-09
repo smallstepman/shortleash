@@ -35,7 +35,7 @@ The package exposes `./src/extension.ts` as its OMP extension entrypoint. The ex
 /shortleash reconcile <file.json|issue-id> [--json]
 ```
 
-Declared-agent runs attach the Shortleash dashboard and execute workers through the host's worker executor. Agents in a runnable dependency wave are bounded by the host `task.maxConcurrency` setting; later waves wait for dependencies.
+Declared-agent runs attach the Shortleash dashboard and execute workers through OMP's structured subagent API. OMP resolves the configured `agent` profile (or the default `task` profile), constructs the child session, applies the host tool/isolation policy, and returns the normalized worker result. Agents in a runnable dependency wave are bounded by the host `task.maxConcurrency` setting; later waves wait for dependencies.
 
 A definition without `agents` is intentionally different: it sends its task to the current OMP session. The extension captures the session's final result, runs the same policy boundaries, persists attempt history, and sends corrective feedback as a follow-up message when policy rejects the attempt.
 
@@ -67,9 +67,11 @@ For each topological wave:
 2. Execute the agents subject to the host's `task.maxConcurrency` setting and the configured timeout.
 3. Capture optional agent-scoped before/after observations.
 4. Evaluate agent policies during finalization.
-5. If rejected, send findings to the same worker session and persist the next attempt.
+5. If rejected, send findings to the same worker session journal and persist the next attempt.
 6. Evaluate wave policies and apply `failure_policy`.
 7. After the graph, evaluate completion policies and persist the terminal status.
+
+For `workspace_isolation: worktree`, OMP closes isolated sessions after each turn. Shortleash therefore reopens the same child session journal in a fresh isolated invocation for corrective attempts, so each correction retains transcript context and produces a mergeable patch.
 
 Checks and evaluators are direct `.ts` modules. A check file default-exports `{ description, check }`; an evaluator file default-exports `{ version, description, evaluate }`. References are paths relative to the definition file, or `{ path, params }` objects for scalar parameters. A check returns a boolean or structured result. An evaluator returns an outcome, explanation, findings, and evidence references. Supported policy boundaries are `agent`, `wave`, and `complete`; a blocking rejection prevents a completed run. Policy context includes the normalized definition, paths, boundary, optional attempt/wave/agent, scalar reference parameters, latest results, result history, and current durable state.
 

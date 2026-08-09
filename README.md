@@ -87,9 +87,9 @@ Closing the overlay does not stop the run.
 
 ## Execution model
 
-Declared agents execute through the oh-my-pi worker executor. The dependency graph determines runnable waves; agents in a wave run concurrently subject to the host `task.maxConcurrency` setting, and later waves wait for their dependencies. The Shortleash widget and dashboard remain available in the TUI.
+Declared agents execute through OMP's structured subagent API. The dependency graph determines runnable waves; agents in a wave run concurrently subject to the host `task.maxConcurrency` setting, and later waves wait for their dependencies. The Shortleash widget and dashboard remain available in the TUI.
 
-The TUI uses the same host worker execution path for declared agents and current-session work. `isolation: worktree` uses the host worktree-isolation lifecycle, and `inherit_history` requires an interactive OMP session.
+OMP resolves each agent's optional native `agent` profile, creates the durable child session, and owns tool/isolation policy. `isolation: worktree` uses the host worktree-isolation lifecycle; corrective work reopens the same child journal because host isolated sessions are intentionally not resumable. `inherit_history` requires an interactive OMP session.
 
 ## Durable state and monitoring
 
@@ -279,6 +279,7 @@ Use `isolation` to choose shared workspace execution or host-managed worktrees. 
 
 | Field | Required | Behavior |
 | --- | --- | --- |
+| `agent` | no | OMP-native agent profile name. Omit to use the host's default `task` profile. |
 | `role` | yes | Short role text used to build the worker system prompt. |
 | `task` | yes | Complete user prompt for the worker. |
 | `extra_context` | no | Additional system-prompt text. |

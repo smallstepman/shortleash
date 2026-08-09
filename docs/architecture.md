@@ -11,9 +11,9 @@ JSON or metadata.shortleash
   -> parse and normalize ShortleashDefinition
   -> validate policy references and dependency graph
   -> build topological execution waves
-  -> run each agent in its configured workspace
+  -> run each agent through OMP's structured subagent API in its configured workspace
   -> finalize agent output through checks/evaluators
-  -> send corrective findings to the same worker session when rejected
+  -> send corrective findings to the worker's persistent child session journal when rejected
   -> persist state and project lifecycle notes
 ```
 
@@ -25,7 +25,7 @@ The orchestration core does not require Beads:
 - `src/orchestration/definition/plan.ts` resolves a file or `issue://` input, loads the referenced TypeScript policy modules, validates the graph, and produces waves.
 - `src/orchestration/execution/dag.ts` builds dependencies, detects cycles, and topologically sorts waves.
 - `src/orchestration/execution/pipeline.ts` coordinates waves, failure policy, policy boundaries, persistence, and projection.
-- `src/orchestration/execution/executor.ts` runs workers through the host subprocess API, supports optional history inheritance and worktree isolation, and performs same-session corrective turns.
+- `src/orchestration/execution/executor.ts` resolves OMP agent profiles, creates durable child sessions, delegates tool/isolation policy to the structured subagent API, and performs corrective turns.
 - `src/orchestration/execution/state.ts` owns the durable run state and run lock.
 
 The OMP extension is the adapter around that core. It provides the TUI dashboard, current-session execution for definitions without declared agents, and Beads claim hooks.
