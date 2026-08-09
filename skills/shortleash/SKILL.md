@@ -4,7 +4,7 @@ description: Use Shortleash to design, run, inspect, evaluate, resume, and recon
 license: MIT
 compatibility: Requires the Shortleash extension in oh-my-pi; standalone execution requires Bun. Herdr is optional, and Beads-backed runs require a working bd installation plus valid metadata.shortleash.
 metadata:
-  package: "@oh-my-pi/shortleash"
+  package: "shortleash"
   format: agentskills
 ---
 
@@ -153,7 +153,7 @@ Policies are executable runtime contracts, not prompt instructions.
 A code-defined plugin uses the public package API:
 
 ```ts
-import { defineSwarmPlugin } from "@oh-my-pi/shortleash/plugin";
+import { defineSwarmPlugin } from "shortleash/plugin";
 
 export default defineSwarmPlugin({
   name: "architecture",
