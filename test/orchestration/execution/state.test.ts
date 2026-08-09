@@ -7,7 +7,7 @@ import { StateTracker } from "../../../src/orchestration/execution/state";
 let workspace: string;
 
 beforeEach(async () => {
-	workspace = await fs.mkdtemp(path.join(os.tmpdir(), "swarm-state-test-"));
+	workspace = await fs.mkdtemp(path.join(os.tmpdir(), "shortleash-state-test-"));
 });
 
 afterEach(async () => {
@@ -31,20 +31,20 @@ function result(output = "ok") {
 	};
 }
 
-describe("Swarm state lifecycle", () => {
+describe("Shortleash state lifecycle", () => {
 	it("serializes completed results and resumes only compatible state", async () => {
 		const tracker = new StateTracker(workspace, "resume");
-		await tracker.init(["worker"], 1, "sequential", {
+		await tracker.init(["worker"], {
 			definitionHash: "hash-a",
 			workspace,
 		});
-		await tracker.recordResult("worker", 0, 0, result());
-		await tracker.updatePipeline({ status: "failed", nextIteration: 0 });
+		await tracker.recordResult("worker", 0, result());
+		await tracker.updatePipeline({ status: "failed" });
 		await tracker.releaseRunLock();
 
 		const resumedTracker = new StateTracker(workspace, "resume");
 		await resumedTracker.acquireRunLock({ definitionHash: "hash-a", workspace });
-		const init = await resumedTracker.init(["worker"], 1, "sequential", {
+		const init = await resumedTracker.init(["worker"], {
 			definitionHash: "hash-a",
 			workspace,
 			resume: true,
@@ -55,8 +55,8 @@ describe("Swarm state lifecycle", () => {
 
 		const incompatibleTracker = new StateTracker(workspace, "resume");
 		await incompatibleTracker.acquireRunLock({ definitionHash: "hash-b", workspace });
-		expect(
-			incompatibleTracker.init(["worker"], 1, "sequential", {
+		await expect(
+			incompatibleTracker.init(["worker"], {
 				definitionHash: "hash-b",
 				workspace,
 				resume: true,
@@ -64,25 +64,26 @@ describe("Swarm state lifecycle", () => {
 		).rejects.toThrow("definition hash changed");
 		await incompatibleTracker.releaseRunLock();
 	});
+
 	it("requires an explicit restart to replace terminal persisted state", async () => {
 		const tracker = new StateTracker(workspace, "restart");
-		await tracker.init(["worker"], 1, "sequential", {
+		await tracker.init(["worker"], {
 			definitionHash: "hash-a",
 			workspace,
 		});
-		await tracker.recordResult("worker", 0, 0, result());
-		await tracker.updatePipeline({ status: "completed", nextIteration: 1, completedAt: Date.now() });
+		await tracker.recordResult("worker", 0, result());
+		await tracker.updatePipeline({ status: "completed", completedAt: Date.now() });
 
 		const repeated = new StateTracker(workspace, "restart");
 		await expect(
-			repeated.init(["worker"], 1, "sequential", {
+			repeated.init(["worker"], {
 				definitionHash: "hash-a",
 				workspace,
 			}),
 		).rejects.toThrow("Use --resume to continue it or --restart to run it again");
 
 		const restarted = new StateTracker(workspace, "restart");
-		const init = await restarted.init(["worker"], 1, "sequential", {
+		const init = await restarted.init(["worker"], {
 			definitionHash: "hash-b",
 			workspace,
 			restart: true,
@@ -91,17 +92,18 @@ describe("Swarm state lifecycle", () => {
 		expect(restarted.state.status).toBe("running");
 		expect(restarted.state.results.worker).toEqual([]);
 	});
+
 	it("requires persisted state for resume and refuses corrupt run locks", async () => {
 		const missing = new StateTracker(workspace, "missing-resume");
 		await expect(
-			missing.init(["worker"], 1, "sequential", {
+			missing.init(["worker"], {
 				resume: true,
 			}),
 		).rejects.toThrow("no persisted state");
 
 		const tracker = new StateTracker(workspace, "corrupt-lock");
-		await tracker.init(["worker"], 1, "sequential", { definitionHash: "hash", workspace });
-		await fs.writeFile(path.join(tracker.swarmDir, "run.lock"), "{not-json");
+		await tracker.init(["worker"]);
+		await fs.writeFile(path.join(tracker.shortleashDir, "run.lock"), "{not-json");
 
 		const contender = new StateTracker(workspace, "corrupt-lock");
 		await expect(
@@ -111,7 +113,7 @@ describe("Swarm state lifecycle", () => {
 
 	it("rejects concurrent runs and recovers an explicit stale lock", async () => {
 		const tracker = new StateTracker(workspace, "locking");
-		await tracker.init(["worker"], 1, "sequential", { definitionHash: "hash", workspace });
+		await tracker.init(["worker"], { definitionHash: "hash", workspace });
 		await tracker.acquireRunLock({ definitionHash: "hash", workspace });
 
 		const competingTracker = new StateTracker(workspace, "locking");
@@ -119,7 +121,7 @@ describe("Swarm state lifecycle", () => {
 		await tracker.releaseRunLock();
 
 		await fs.writeFile(
-			path.join(tracker.swarmDir, "run.lock"),
+			path.join(tracker.shortleashDir, "run.lock"),
 			JSON.stringify({
 				runId: "dead-run",
 				pid: 999_999_999,
@@ -135,15 +137,16 @@ describe("Swarm state lifecycle", () => {
 
 	it("surfaces corrupt state instead of treating it as missing", async () => {
 		const tracker = new StateTracker(workspace, "corrupt");
-		await tracker.init(["worker"], 1, "sequential");
-		await fs.writeFile(path.join(tracker.swarmDir, "state", "pipeline.json"), "{not-json");
+		await tracker.init(["worker"]);
+		await fs.writeFile(path.join(tracker.shortleashDir, "state", "pipeline.json"), "{not-json");
 		await expect(tracker.load()).rejects.toThrow("state at");
 	});
+
 	it("normalizes malformed persisted entries without trusting broad JSON casts", async () => {
 		const tracker = new StateTracker(workspace, "normalize");
-		await tracker.init(["worker"], 1, "sequential");
+		await tracker.init(["worker"]);
 		await fs.writeFile(
-			path.join(tracker.swarmDir, "state", "pipeline.json"),
+			path.join(tracker.shortleashDir, "state", "pipeline.json"),
 			JSON.stringify({
 				...tracker.state,
 				agents: {
@@ -173,7 +176,7 @@ describe("Swarm state lifecycle", () => {
 		);
 
 		const loaded = await tracker.load();
-		expect(loaded?.agents.worker.iteration).toBe(0);
+		expect("iteration" in (loaded?.agents.worker ?? {})).toBe(false);
 		expect(loaded?.results.worker).toHaveLength(1);
 		expect(loaded?.results.worker[0]?.result.output).toBe("recovered");
 		expect(loaded?.policy?.boundary).toBe("agent");

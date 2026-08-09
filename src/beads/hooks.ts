@@ -14,7 +14,7 @@ import type {
 import { bashToolRenderer } from "@oh-my-pi/pi-coding-agent";
 import type { BashResult } from "@oh-my-pi/pi-coding-agent/exec/bash-executor";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { hasSwarmMetadata, validateSwarmMetadata } from "../orchestration/definition/metadata";
+import { hasShortleashMetadata, validateShortleashMetadata } from "../orchestration/definition/metadata";
 import { type BeadsIssueRecord, extractBeadsData, extractBeadsIssueRecords } from "./client";
 import {
 	type BeadsRenderArgs,
@@ -397,9 +397,9 @@ async function inspectClaimTarget(
 	const records = extractBeadsIssueRecords(data);
 	const configured: ClaimTarget[] = [];
 	for (const record of records) {
-		if (!hasSwarmMetadata(record.metadata)) continue;
+		if (!hasShortleashMetadata(record.metadata)) continue;
 		try {
-			validateSwarmMetadata(record.metadata, `Bead '${record.id}' metadata`);
+			validateShortleashMetadata(record.metadata, `Bead '${record.id}' metadata`);
 		} catch (error) {
 			return errorMessage(error);
 		}
@@ -431,9 +431,9 @@ async function validateMetadataMutation(args: readonly string[], cwd: string): P
 	} catch (error) {
 		return errorMessage(error);
 	}
-	if (!hasSwarmMetadata(metadata)) return undefined;
+	if (!hasShortleashMetadata(metadata)) return undefined;
 	try {
-		validateSwarmMetadata(metadata);
+		validateShortleashMetadata(metadata);
 		return undefined;
 	} catch (error) {
 		return errorMessage(error);

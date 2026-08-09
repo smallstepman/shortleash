@@ -4,26 +4,27 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
-import { parseSwarm } from "../../../src/orchestration/definition/schema";
+import { parseShortleash } from "../../../src/orchestration/definition/schema";
 import { StateTracker } from "../../../src/orchestration/execution/state";
-import { attachSwarmDashboard } from "../../../src/orchestration/presentation/dashboard";
+import { attachShortleashDashboard } from "../../../src/orchestration/presentation/dashboard";
 
-describe("swarm dashboard lifecycle", () => {
+describe("Shortleash dashboard lifecycle", () => {
 	it("attaches the widget and opens an overlay from Alt+W", async () => {
-		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "swarm-dashboard-ui-"));
+		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "shortleash-dashboard-ui-"));
 		try {
-			const definition = parseSwarm(`
-swarm:
-  name: dashboard-ui
-  workspace: ${workspace}
-  mode: sequential
-  agents:
-    inspect:
-      role: inspector
-      task: Inspect the workspace.
-`);
+			const definition = parseShortleash(
+				JSON.stringify({
+					swarm: {
+						name: "dashboard-ui",
+						workspace,
+						agents: {
+							inspect: { role: "inspector", task: "Inspect the workspace." },
+						},
+					},
+				}),
+			);
 			const stateTracker = new StateTracker(workspace, definition.name);
-			await stateTracker.init(["inspect"], 1, "sequential");
+			await stateTracker.init(["inspect"]);
 
 			const widgets: Array<{ key: string; content: unknown; options: unknown }> = [];
 			let terminalInput: ((data: string) => unknown) | undefined;
@@ -61,11 +62,11 @@ swarm:
 			} as unknown as ExtensionContext["ui"];
 			const ctx = { hasUI: true, ui } as unknown as ExtensionContext;
 
-			const dashboard = attachSwarmDashboard(ctx, definition, stateTracker, () => {
+			const dashboard = attachShortleashDashboard(ctx, definition, stateTracker, () => {
 				cancelRequested++;
 			});
 			expect(widgets[0]).toMatchObject({
-				key: "swarm-dashboard-ui",
+				key: "shortleash-dashboard-ui",
 				options: { placement: "belowEditor" },
 			});
 			expect(terminalInput?.("\x1bw")).toEqual({ consume: true });
@@ -75,7 +76,7 @@ swarm:
 			expect(customComponent).toBeDefined();
 			const renderedLines = customComponent?.render(100) ?? [];
 			const rendered = renderedLines.join("\n");
-			expect(rendered).toContain("Swarm dashboard-ui");
+			expect(rendered).toContain("Shortleash dashboard-ui");
 			expect(rendered).toContain("Execution graph");
 			expect(visibleWidth(renderedLines[0] ?? "")).toBe(100);
 			expect(renderedLines[0]).toContain("╭");

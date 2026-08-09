@@ -1,5 +1,11 @@
 import { buildDependencyGraph, detectCycles } from "../execution/dag";
-import { parseSwarm, RAW_AGENT_KEYS, RAW_SWARM_KEYS, type SwarmDefinition, validateSwarmDefinition } from "./schema";
+import {
+	parseShortleash,
+	RAW_AGENT_KEYS,
+	RAW_SHORTLEASH_KEYS,
+	type ShortleashDefinition,
+	validateShortleashDefinition,
+} from "./schema";
 
 const scalarJsonSchema = {
 	type: ["string", "number", "boolean", "null"],
@@ -12,14 +18,13 @@ const policyParamsJsonSchema = {
 
 const policyReferenceJsonSchema = {
 	oneOf: [
-		{ type: "string", minLength: 1 },
+		{ type: "string", minLength: 1, pattern: "\\.ts$" },
 		{
 			type: "object",
-			required: ["id"],
+			required: ["path"],
 			additionalProperties: false,
 			properties: {
-				plugin: { type: "string", minLength: 1 },
-				id: { type: "string", minLength: 1 },
+				path: { type: "string", minLength: 1, pattern: "\\.ts$" },
 				params: policyParamsJsonSchema,
 			},
 		},
@@ -53,10 +58,10 @@ const agentJsonSchema = {
 } as const;
 
 /** JSON Schema for the value stored at `metadata.shortleash`. */
-export const SWARM_DEFINITION_JSON_SCHEMA = {
+export const SHORTLEASH_DEFINITION_JSON_SCHEMA = {
 	$schema: "https://json-schema.org/draft/2020-12/schema",
-	$id: "https://omp.sh/schemas/swarm-definition.json",
-	title: "OMP Shortleash swarm definition",
+	$id: "https://omp.sh/schemas/shortleash-definition.json",
+	title: "OMP Shortleash definition",
 	type: "object",
 	required: ["name", "workspace"],
 	additionalProperties: false,
@@ -64,20 +69,14 @@ export const SWARM_DEFINITION_JSON_SCHEMA = {
 		name: { type: "string", minLength: 1, pattern: "^[a-zA-Z0-9._-]+$" },
 		workspace: { type: "string", minLength: 1 },
 		task: { type: "string", minLength: 1 },
-		mode: { type: "string", enum: ["pipeline", "parallel", "sequential"] },
-		agent_execution: { type: "string", enum: ["herdr", "subagents"] },
 		failure_policy: { type: "string", enum: ["fail_fast", "continue", "skip_dependents"] },
-		max_concurrency: { type: "integer", minimum: 1 },
 		agent_timeout_ms: { type: "integer", minimum: 1 },
-		token_budget: { type: "integer", minimum: 1 },
-		request_budget: { type: "integer", minimum: 1 },
 		model: { type: "string", minLength: 1 },
 		isolation: isolationJsonSchema,
 		workspace_isolation: isolationJsonSchema,
 		inherit_history: historyJsonSchema,
 		history: historyJsonSchema,
 		parent_history: historyJsonSchema,
-		plugins: { type: "array", items: { type: "string", minLength: 1 } },
 		checks: { type: "array", items: policyReferenceJsonSchema },
 		evals: { type: "array", items: policyReferenceJsonSchema },
 		agents: {
@@ -90,18 +89,18 @@ export const SWARM_DEFINITION_JSON_SCHEMA = {
 } as const;
 
 /** JSON Schema for Beads metadata carrying an optional Shortleash configuration. */
-export const SWARM_METADATA_JSON_SCHEMA = {
+export const SHORTLEASH_METADATA_JSON_SCHEMA = {
 	$schema: "https://json-schema.org/draft/2020-12/schema",
 	$id: "https://omp.sh/schemas/beads-metadata.json",
 	title: "Beads metadata with optional Shortleash configuration",
 	type: "object",
 	additionalProperties: true,
 	properties: {
-		shortleash: SWARM_DEFINITION_JSON_SCHEMA,
+		shortleash: SHORTLEASH_DEFINITION_JSON_SCHEMA,
 	},
 } as const;
 
-export function hasSwarmMetadata(value: unknown): boolean {
+export function hasShortleashMetadata(value: unknown): boolean {
 	try {
 		return Object.hasOwn(normalizeMetadataObject(value, "metadata"), "shortleash");
 	} catch {
@@ -110,15 +109,15 @@ export function hasSwarmMetadata(value: unknown): boolean {
 }
 
 /** Validate and normalize a Beads metadata object containing `metadata.shortleash`. */
-export function validateSwarmMetadata(value: unknown, field = "metadata"): SwarmDefinition {
+export function validateShortleashMetadata(value: unknown, field = "metadata"): ShortleashDefinition {
 	const metadata = normalizeMetadataObject(value, field);
 	if (!Object.hasOwn(metadata, "shortleash") || !isRecord(metadata.shortleash)) {
 		throw new Error(`${field} must contain an object at '${field}.shortleash'`);
 	}
 
-	validateRawSwarmConfig(metadata.shortleash, `${field}.shortleash`);
-	const definition = parseSwarm(JSON.stringify({ swarm: metadata.shortleash }));
-	const semanticErrors = validateSwarmDefinition(definition);
+	validateRawShortleashConfig(metadata.shortleash, `${field}.shortleash`);
+	const definition = parseShortleash(JSON.stringify({ swarm: metadata.shortleash }));
+	const semanticErrors = validateShortleashDefinition(definition);
 	const cycles = detectCycles(buildDependencyGraph(definition));
 	if (cycles) semanticErrors.push(`cycle detected in agent dependencies: [${cycles.join(", ")}]`);
 	if (semanticErrors.length > 0) {
@@ -141,24 +140,18 @@ export function normalizeMetadataObject(value: unknown, field = "metadata"): Rec
 	throw new Error(`${field} must be a JSON object`);
 }
 
-function validateRawSwarmConfig(value: Record<string, unknown>, field: string): void {
-	assertKnownKeys(value, RAW_SWARM_KEYS, field);
+function validateRawShortleashConfig(value: Record<string, unknown>, field: string): void {
+	assertKnownKeys(value, RAW_SHORTLEASH_KEYS, field);
 	assertString(value.name, `${field}.name`, { required: true, pattern: /^[a-zA-Z0-9._-]+$/ });
 	assertString(value.workspace, `${field}.workspace`, { required: true });
 	assertString(value.task, `${field}.task`);
-	assertOptionalPositiveInteger(value.target_count, `${field}.target_count`);
 	assertOptionalEnum(value.failure_policy, `${field}.failure_policy`, ["fail_fast", "continue", "skip_dependents"]);
-	assertOptionalPositiveInteger(value.max_concurrency, `${field}.max_concurrency`);
 	assertOptionalPositiveInteger(value.agent_timeout_ms, `${field}.agent_timeout_ms`);
-	assertOptionalPositiveInteger(value.token_budget, `${field}.token_budget`);
-	assertOptionalPositiveInteger(value.request_budget, `${field}.request_budget`);
-	assertOptionalEnum(value.agent_execution, `${field}.agent_execution`, ["herdr", "subagents"]);
 	assertOptionalIsolation(value.isolation, `${field}.isolation`);
 	assertOptionalIsolation(value.workspace_isolation, `${field}.workspace_isolation`);
 	assertOptionalHistory(value.inherit_history, `${field}.inherit_history`);
 	assertOptionalHistory(value.history, `${field}.history`);
 	assertOptionalHistory(value.parent_history, `${field}.parent_history`);
-	assertStringArray(value.plugins, `${field}.plugins`);
 	assertPolicyRefArray(value.checks, `${field}.checks`);
 	assertPolicyRefArray(value.evals, `${field}.evals`);
 
@@ -241,12 +234,17 @@ function assertPolicyRefArray(value: unknown, field: string): void {
 		const entryField = `${field}[${index}]`;
 		if (typeof entry === "string") {
 			if (entry.trim().length === 0) throw new Error(`${entryField} must not be empty`);
+			if (!entry.trim().endsWith(".ts")) throw new Error(`${entryField} must point to a .ts file`);
 			continue;
 		}
-		if (!isRecord(entry)) throw new Error(`${entryField} must be a string or an object with an id`);
-		assertKnownKeys(entry, new Set(["plugin", "id", "params"]), entryField);
-		assertString(entry.id, `${entryField}.id`, { required: true });
-		assertString(entry.plugin, `${entryField}.plugin`);
+		if (!isRecord(entry) || typeof entry.path !== "string") {
+			throw new Error(`${entryField} must be a .ts path or an object with a path`);
+		}
+		assertKnownKeys(entry, new Set(["path", "params"]), entryField);
+		assertString(entry.path, `${entryField}.path`, { required: true });
+		if (!entry.path.trim().endsWith(".ts")) {
+			throw new Error(`${entryField}.path must point to a .ts file`);
+		}
 		if (entry.params !== undefined) {
 			if (!isRecord(entry.params)) throw new Error(`${entryField}.params must be an object of scalar values`);
 			for (const [key, parameter] of Object.entries(entry.params)) {

@@ -1,8 +1,8 @@
 /**
- * Swarm agent execution via oh-my-pi's subagent infrastructure.
+ * Shortleash agent execution via oh-my-pi's subagent infrastructure.
  *
- * Wraps `runSubprocess` to spawn individual swarm agents with full tool access.
- * Each agent runs in the swarm workspace with its task instructions as the user prompt.
+ * Wraps `runSubprocess` to spawn individual Shortleash agents with full tool access.
+ * Each agent runs in the Shortleash workspace with its task instructions as the user prompt.
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -25,19 +25,18 @@ import {
 	runIsolatedSubprocess,
 } from "@oh-my-pi/pi-coding-agent/task/isolation-runner";
 import { parseIsolationMode } from "@oh-my-pi/pi-coding-agent/task/worktree";
-import type { SwarmAgent, SwarmDefinition, SwarmIsolationMode } from "../definition/schema";
+import type { ShortleashAgent, ShortleashDefinition, ShortleashIsolationMode } from "../definition/schema";
 import type { StateTracker } from "./state";
 
-export interface SwarmExecutorOptions {
+export interface ShortleashExecutorOptions {
 	workspace: string;
-	swarmName: string;
-	iteration: number;
+	shortleashName: string;
 	modelOverride?: string;
 	signal?: AbortSignal;
 	onProgress?: (agentName: string, progress: AgentProgress) => void;
 	modelRegistry?: ModelRegistry;
 	/** Isolate this worker in a host-managed copy-on-write worktree. */
-	workspaceIsolation?: SwarmIsolationMode;
+	workspaceIsolation?: ShortleashIsolationMode;
 	/** Copy the current parent OMP branch into the worker's session before its task. */
 	inheritHistory?: boolean;
 	/** Parent branch messages supplied by the interactive extension adapter. */
@@ -49,11 +48,6 @@ export interface SwarmExecutorOptions {
 	/** Number of same-session follow-up turns allowed after a rejected finalization. */
 	maxFinalizeAttempts?: number;
 }
-export type SwarmAgentRunner = (
-	agent: SwarmAgent,
-	index: number,
-	options: SwarmExecutorOptions,
-) => Promise<SingleResult>;
 
 const isolationMergeTails = new Map<string, Promise<void>>();
 
@@ -134,7 +128,7 @@ async function runWorker(
 	index: number,
 	id: string,
 	task: string,
-	workspaceIsolation: SwarmIsolationMode | undefined,
+	workspaceIsolation: ShortleashIsolationMode | undefined,
 ): Promise<SingleResult> {
 	if (workspaceIsolation !== "worktree") return runSubprocess(baseOptions);
 
@@ -145,7 +139,7 @@ async function runWorker(
 		preferredBackend: parseIsolationMode("worktree"),
 		agentId: id,
 		mergeMode: "patch",
-		artifactsDir: baseOptions.artifactsDir ?? path.join(baseOptions.cwd, ".swarm-context"),
+		artifactsDir: baseOptions.artifactsDir ?? path.join(baseOptions.cwd, ".shortleash-context"),
 		description: baseOptions.description,
 		buildFailureResult: error => makeIsolationFailureResult(agent, index, id, task, error),
 	});
@@ -185,27 +179,27 @@ async function runWorker(
 }
 
 /**
- * Execute a single swarm agent as an oh-my-pi subagent.
+ * Execute a single Shortleash agent as an oh-my-pi subagent.
  *
  * The agent receives:
  * - System prompt: built from role + extra_context
- * - User prompt (task): the full task instructions from the YAML
- * - Working directory: the swarm workspace
+ * - User prompt (task): the full task instructions from the JSON definition
+ * - Working directory: the Shortleash workspace
  * - Full tool access (bash, python, read, write, edit, grep, find, fetch, web_search, browser)
  */
-export async function executeSwarmAgent(
-	agent: SwarmAgent,
+export async function executeShortleashAgent(
+	agent: ShortleashAgent,
 	index: number,
-	options: SwarmExecutorOptions,
+	options: ShortleashExecutorOptions,
 ): Promise<SingleResult> {
-	const { workspace, swarmName, iteration, modelOverride, signal, modelRegistry, settings, stateTracker } = options;
+	const { workspace, shortleashName, modelOverride, signal, modelRegistry, settings, stateTracker } = options;
 
-	const agentId = `swarm-${swarmName}-${agent.name}-${iteration}`;
-	const artifactsDir = path.join(stateTracker.swarmDir, "context");
+	const agentId = `shortleash-${shortleashName}-${agent.name}`;
+	const artifactsDir = path.join(stateTracker.shortleashDir, "context");
 
 	const agentDef: AgentDefinition = {
 		name: agent.name,
-		description: `Swarm agent: ${agent.role}`,
+		description: `Shortleash agent: ${agent.role}`,
 		systemPrompt: buildSystemPrompt(agent),
 		source: "project" as AgentSource,
 	};
@@ -221,10 +215,9 @@ export async function executeSwarmAgent(
 
 	await stateTracker.updateAgent(agent.name, {
 		status: "running",
-		iteration,
 		startedAt: Date.now(),
 	});
-	await stateTracker.appendLog(agent.name, `Starting iteration ${iteration}`);
+	await stateTracker.appendLog(agent.name, "Starting agent");
 
 	try {
 		const recordResult = async (result: SingleResult, attempt: number): Promise<void> => {
@@ -235,10 +228,10 @@ export async function executeSwarmAgent(
 				completedAt: Date.now(),
 				error: result.error,
 			});
-			await stateTracker.recordResult(agent.name, iteration, attempt, result);
+			await stateTracker.recordResult(agent.name, attempt, result);
 			await stateTracker.appendLog(
 				agent.name,
-				`Iteration ${iteration} attempt ${attempt} ${status}${result.error ? `: ${result.error}` : ""}`,
+				`Attempt ${attempt} ${status}${result.error ? `: ${result.error}` : ""}`,
 			);
 		};
 
@@ -307,12 +300,12 @@ export async function executeSwarmAgent(
 			completedAt: Date.now(),
 			error,
 		});
-		await stateTracker.appendLog(agent.name, `Iteration ${iteration} error: ${error}`);
+		await stateTracker.appendLog(agent.name, `Agent error: ${error}`);
 		throw err;
 	}
 }
 
-function buildSystemPrompt(agent: SwarmAgent): string {
+function buildSystemPrompt(agent: ShortleashAgent): string {
 	const parts = [`You are a ${agent.role}.`];
 	if (agent.extraContext) {
 		parts.push(agent.extraContext);
@@ -320,12 +313,12 @@ function buildSystemPrompt(agent: SwarmAgent): string {
 	return parts.join("\n\n");
 }
 
-export interface SwarmDirectMessageSender {
+export interface ShortleashDirectMessageSender {
 	sendUserMessage(content: string): void;
 }
 
 /** Build the prompt that keeps a no-agent definition in the current OMP session. */
-export function buildDirectSwarmPrompt(definition: SwarmDefinition): string {
+export function buildDirectShortleashPrompt(definition: ShortleashDefinition): string {
 	const task =
 		definition.task ??
 		`Continue the current objective in the '${definition.name}' Shortleash definition and leave the workspace ready for validation.`;
@@ -345,18 +338,17 @@ export function buildDirectSwarmPrompt(definition: SwarmDefinition): string {
 }
 
 /** Queue direct execution through the host session instead of the subagent runner. */
-export function executeDirectSwarm(definition: SwarmDefinition, sender: SwarmDirectMessageSender): void {
+export function executeDirectShortleash(definition: ShortleashDefinition, sender: ShortleashDirectMessageSender): void {
 	if (definition.agents.size > 0) {
 		throw new Error("Direct Shortleash execution requires a definition without agents.");
 	}
-	sender.sendUserMessage(buildDirectSwarmPrompt(definition));
+	sender.sendUserMessage(buildDirectShortleashPrompt(definition));
 }
 
 function formatPolicyReference(reference: unknown): string {
 	if (typeof reference === "string") return reference;
-	if (reference && typeof reference === "object" && "id" in reference) {
-		const value = reference as { plugin?: unknown; id: unknown };
-		return `${typeof value.plugin === "string" ? `${value.plugin}:` : ""}${String(value.id)}`;
+	if (reference && typeof reference === "object" && "path" in reference) {
+		return String(reference.path);
 	}
 	return String(reference);
 }

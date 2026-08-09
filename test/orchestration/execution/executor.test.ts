@@ -4,11 +4,11 @@ import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ModelRegistry, SingleResult } from "@oh-my-pi/pi-coding-agent";
 import * as taskExecutor from "@oh-my-pi/pi-coding-agent";
-import { parseSwarm } from "../../../src/orchestration/definition/schema";
+import { parseShortleash } from "../../../src/orchestration/definition/schema";
 import {
-	buildDirectSwarmPrompt,
-	executeDirectSwarm,
-	executeSwarmAgent,
+	buildDirectShortleashPrompt,
+	executeDirectShortleash,
+	executeShortleashAgent,
 } from "../../../src/orchestration/execution/executor";
 import { StateTracker } from "../../../src/orchestration/execution/state";
 
@@ -29,7 +29,7 @@ const mockResult = {
 let workspace: string;
 
 beforeEach(async () => {
-	workspace = await fs.mkdtemp(path.join(os.tmpdir(), "swarm-test-"));
+	workspace = await fs.mkdtemp(path.join(os.tmpdir(), "shortleash-test-"));
 });
 
 afterEach(async () => {
@@ -37,7 +37,7 @@ afterEach(async () => {
 	await fs.rm(workspace, { recursive: true, force: true });
 });
 
-describe("executeSwarmAgent", () => {
+describe("executeShortleashAgent", () => {
 	it("does not pass authStorage to runSubprocess when modelRegistry is provided", async () => {
 		const runSubprocessSpy = vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValue(mockResult);
 
@@ -45,8 +45,8 @@ describe("executeSwarmAgent", () => {
 			authStorage: { discover: vi.fn() },
 		} as unknown as ModelRegistry;
 
-		const stateTracker = new StateTracker(workspace, "test-swarm");
-		await stateTracker.init(["test-agent"], 1, "parallel");
+		const stateTracker = new StateTracker(workspace, "test-shortleash");
+		await stateTracker.init(["test-agent"]);
 
 		const agent = {
 			name: "test-agent",
@@ -58,10 +58,9 @@ describe("executeSwarmAgent", () => {
 			evals: [],
 		};
 
-		await executeSwarmAgent(agent, 0, {
+		await executeShortleashAgent(agent, 0, {
 			workspace,
-			swarmName: "test-swarm",
-			iteration: 0,
+			shortleashName: "test-shortleash",
 			modelRegistry: mockModelRegistry,
 			stateTracker,
 		});
@@ -80,8 +79,8 @@ describe("executeSwarmAgent", () => {
 		const followUpSpy = vi.spyOn(taskExecutor, "runSubagentFollowUpTurn").mockResolvedValue(followUpResult);
 		const onFinalize = vi.fn().mockResolvedValueOnce("Fix the failed policy.").mockResolvedValueOnce(undefined);
 
-		const stateTracker = new StateTracker(workspace, "test-swarm");
-		await stateTracker.init(["test-agent"], 1, "parallel");
+		const stateTracker = new StateTracker(workspace, "test-shortleash");
+		await stateTracker.init(["test-agent"]);
 
 		const agent = {
 			name: "test-agent",
@@ -93,10 +92,9 @@ describe("executeSwarmAgent", () => {
 			evals: [],
 		};
 
-		const result = await executeSwarmAgent(agent, 0, {
+		const result = await executeShortleashAgent(agent, 0, {
 			workspace,
-			swarmName: "test-swarm",
-			iteration: 0,
+			shortleashName: "test-shortleash",
 			stateTracker,
 			onFinalize,
 		});
@@ -106,7 +104,7 @@ describe("executeSwarmAgent", () => {
 		expect(onFinalize).toHaveBeenCalledTimes(2);
 		expect(followUpSpy).toHaveBeenCalledTimes(1);
 		expect(followUpSpy.mock.calls[0][0]).toMatchObject({
-			id: "swarm-test-swarm-test-agent-0",
+			id: "shortleash-test-shortleash-test-agent",
 			message: "Fix the failed policy.",
 		});
 		expect(result).toBe(followUpResult);
@@ -115,8 +113,8 @@ describe("executeSwarmAgent", () => {
 	it("fails instead of finalizing when corrective attempts remain rejected", async () => {
 		const runSubprocessSpy = vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValue(mockResult);
 		const followUpSpy = vi.spyOn(taskExecutor, "runSubagentFollowUpTurn").mockResolvedValue(mockResult);
-		const stateTracker = new StateTracker(workspace, "test-swarm");
-		await stateTracker.init(["test-agent"], 1, "parallel");
+		const stateTracker = new StateTracker(workspace, "test-shortleash");
+		await stateTracker.init(["test-agent"]);
 
 		const agent = {
 			name: "test-agent",
@@ -129,10 +127,9 @@ describe("executeSwarmAgent", () => {
 		};
 
 		await expect(
-			executeSwarmAgent(agent, 0, {
+			executeShortleashAgent(agent, 0, {
 				workspace,
-				swarmName: "test-swarm",
-				iteration: 0,
+				shortleashName: "test-shortleash",
 				stateTracker,
 				maxFinalizeAttempts: 1,
 				onFinalize: async () => "Still rejected.",
@@ -144,8 +141,8 @@ describe("executeSwarmAgent", () => {
 
 	it("materializes parent history into the spawned session", async () => {
 		const runSubprocessSpy = vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValue(mockResult);
-		const stateTracker = new StateTracker(workspace, "test-swarm");
-		await stateTracker.init(["test-agent"], 1, "parallel");
+		const stateTracker = new StateTracker(workspace, "test-shortleash");
+		await stateTracker.init(["test-agent"]);
 
 		const agent = {
 			name: "test-agent",
@@ -162,10 +159,9 @@ describe("executeSwarmAgent", () => {
 			timestamp: Date.now(),
 		} as AgentMessage;
 
-		await executeSwarmAgent(agent, 0, {
+		await executeShortleashAgent(agent, 0, {
 			workspace,
-			swarmName: "test-swarm",
-			iteration: 0,
+			shortleashName: "test-shortleash",
 			stateTracker,
 			inheritHistory: true,
 			parentMessages: [parentMessage],
@@ -180,38 +176,42 @@ describe("executeSwarmAgent", () => {
 
 describe("direct current-session execution", () => {
 	it("sends a no-agent definition through the host session instead of spawning a worker", () => {
-		const definition = parseSwarm(`
-swarm:
-  name: direct-execution
-  workspace: .
-  task: Inspect the current workspace and report findings.
-  checks:
-    - fixture:architecture
-`);
+		const definition = parseShortleash(
+			JSON.stringify({
+				swarm: {
+					name: "direct-execution",
+					workspace: ".",
+					task: "Inspect the current workspace and report findings.",
+					checks: ["./checks/architecture.ts"],
+				},
+			}),
+		);
 		const sendUserMessage = vi.fn();
 
-		executeDirectSwarm(definition, { sendUserMessage });
+		executeDirectShortleash(definition, { sendUserMessage });
 
 		expect(sendUserMessage).toHaveBeenCalledTimes(1);
 		expect(sendUserMessage.mock.calls[0][0]).toContain("Inspect the current workspace and report findings.");
 		expect(sendUserMessage.mock.calls[0][0]).toContain("current OMP session");
-		expect(sendUserMessage.mock.calls[0][0]).toContain("check:fixture:architecture");
+		expect(sendUserMessage.mock.calls[0][0]).toContain("check:./checks/architecture.ts");
 	});
 
 	it("rejects direct execution when agents are declared", () => {
-		const definition = parseSwarm(`
-swarm:
-  name: delegated-execution
-  workspace: .
-  agents:
-    worker:
-      role: engineer
-      task: implement
-`);
+		const definition = parseShortleash(
+			JSON.stringify({
+				swarm: {
+					name: "delegated-execution",
+					workspace: ".",
+					agents: {
+						worker: { role: "engineer", task: "implement" },
+					},
+				},
+			}),
+		);
 
-		expect(() => executeDirectSwarm(definition, { sendUserMessage: vi.fn() })).toThrow(
+		expect(() => executeDirectShortleash(definition, { sendUserMessage: vi.fn() })).toThrow(
 			"requires a definition without agents",
 		);
-		expect(buildDirectSwarmPrompt(definition)).toContain("current OMP session");
+		expect(buildDirectShortleashPrompt(definition)).toContain("current OMP session");
 	});
 });

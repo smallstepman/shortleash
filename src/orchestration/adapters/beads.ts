@@ -1,23 +1,23 @@
 import * as path from "node:path";
-import { validateSwarmMetadata } from "../definition/metadata";
-import { parseSwarm, type SwarmDefinition } from "../definition/schema";
+import { validateShortleashMetadata } from "../definition/metadata";
+import { parseShortleash, type ShortleashDefinition } from "../definition/schema";
 import type { PipelineStatus } from "../execution/state";
 
-export interface SwarmBeadRecord {
+export interface ShortleashBeadRecord {
 	id: string;
 	title: string;
 	description?: string;
 	metadata?: unknown;
 }
 
-export type SwarmBeadReader = (id: string, cwd: string) => Promise<SwarmBeadRecord>;
+export type ShortleashBeadReader = (id: string, cwd: string) => Promise<ShortleashBeadRecord>;
 
-export interface SwarmInputOptions {
-	readBead?: SwarmBeadReader;
+export interface ShortleashInputOptions {
+	readBead?: ShortleashBeadReader;
 }
 
-export interface ResolvedSwarmInput {
-	definition: SwarmDefinition;
+export interface ResolvedShortleashInput {
+	definition: ShortleashDefinition;
 	definitionPath: string;
 	definitionDir: string;
 	beadId?: string;
@@ -27,26 +27,26 @@ export function isIssueReference(value: string): boolean {
 	return value.trim().startsWith("issue://");
 }
 
-export async function resolveSwarmInput(
+export async function resolveShortleashInput(
 	input: string,
 	cwd: string,
-	options: SwarmInputOptions = {},
-): Promise<ResolvedSwarmInput> {
+	options: ShortleashInputOptions = {},
+): Promise<ResolvedShortleashInput> {
 	const requested = input.trim();
-	if (requested.length === 0) throw new Error("A swarm definition path or Beads issue ID is required.");
+	if (requested.length === 0) throw new Error("A Shortleash definition path or Beads issue ID is required.");
 
 	if (!isIssueReference(requested)) {
 		const resolvedPath = path.isAbsolute(requested) ? requested : path.resolve(cwd, requested);
 		if (await Bun.file(resolvedPath).exists()) {
 			const content = await Bun.file(resolvedPath).text();
 			return {
-				definition: parseSwarm(content),
+				definition: parseShortleash(content),
 				definitionPath: resolvedPath,
 				definitionDir: path.dirname(resolvedPath),
 			};
 		}
 		if (looksLikeDefinitionPath(requested)) {
-			throw new Error(`Cannot read swarm definition file: ${resolvedPath}`);
+			throw new Error(`Cannot read Shortleash definition file: ${resolvedPath}`);
 		}
 	}
 
@@ -54,31 +54,31 @@ export async function resolveSwarmInput(
 	const reader = options.readBead ?? readBeadFromBd;
 	const bead = await reader(beadId, cwd);
 	return {
-		definition: swarmDefinitionFromBead(bead),
+		definition: shortleashDefinitionFromBead(bead),
 		definitionPath: `issue://${beadId}`,
 		definitionDir: cwd,
 		beadId,
 	};
 }
 
-export function swarmDefinitionFromBead(bead: SwarmBeadRecord): SwarmDefinition {
+export function shortleashDefinitionFromBead(bead: ShortleashBeadRecord): ShortleashDefinition {
 	const metadata = normalizeMetadata(bead.metadata);
 	if (!isRecord(metadata.shortleash)) {
 		throw new Error(
-			"Bead metadata must contain an object at 'metadata.shortleash' using the standard swarm definition schema.",
+			"Bead metadata must contain an object at 'metadata.shortleash' using the standard Shortleash definition schema.",
 		);
 	}
 
 	try {
-		return validateSwarmMetadata(metadata);
+		return validateShortleashMetadata(metadata);
 	} catch (error) {
-		throw new Error(`metadata.shortleash is not a valid swarm definition: ${errorMessage(error)}`);
+		throw new Error(`metadata.shortleash is not a valid Shortleash definition: ${errorMessage(error)}`);
 	}
 }
 
-async function readBeadFromBd(id: string, cwd: string): Promise<SwarmBeadRecord> {
+async function readBeadFromBd(id: string, cwd: string): Promise<ShortleashBeadRecord> {
 	if (typeof Bun === "undefined") {
-		throw new Error("Beads-backed swarm input requires the Bun runtime.");
+		throw new Error("Beads-backed Shortleash input requires the Bun runtime.");
 	}
 
 	const processHandle = Bun.spawn(["bd", "show", id, "--json"], {
@@ -113,7 +113,7 @@ async function readBeadFromBd(id: string, cwd: string): Promise<SwarmBeadRecord>
 	return toBeadRecord(raw);
 }
 
-function toBeadRecord(value: Record<string, unknown>): SwarmBeadRecord {
+function toBeadRecord(value: Record<string, unknown>): ShortleashBeadRecord {
 	if (typeof value.id !== "string" || value.id.trim().length === 0) {
 		throw new Error("bd show returned an item without an id.");
 	}
@@ -158,20 +158,20 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-class MissingSwarmBeadError extends Error {
-	readonly name = "MissingSwarmBeadError";
+class MissingShortleashBeadError extends Error {
+	readonly name = "MissingShortleashBeadError";
 }
 
-export type SwarmProjectionEventType = "started" | "blocked" | "failed" | "aborted" | "completed";
+export type ShortleashProjectionEventType = "started" | "blocked" | "failed" | "aborted" | "completed";
 
-export interface SwarmProjectionEvent {
-	type: SwarmProjectionEventType;
-	swarmName: string;
+export interface ShortleashProjectionEvent {
+	type: ShortleashProjectionEventType;
+	shortleashName: string;
 	status: PipelineStatus;
 	detail?: string;
 }
 
-export interface SwarmBeadsReconciliation {
+export interface ShortleashBeadsReconciliation {
 	beadId: string;
 	beadStatus?: string;
 	authoritativeStatus: PipelineStatus;
@@ -180,33 +180,33 @@ export interface SwarmBeadsReconciliation {
 	reason?: string;
 }
 
-export type SwarmBeadsCommandRunner = (args: string[], cwd: string) => Promise<string>;
+export type ShortleashBeadsCommandRunner = (args: string[], cwd: string) => Promise<string>;
 
-export interface SwarmBeadsProjector {
+export interface ShortleashBeadsProjector {
 	targetId: string;
-	project(event: SwarmProjectionEvent): Promise<void>;
-	reconcile(authoritativeStatus: PipelineStatus): Promise<SwarmBeadsReconciliation>;
+	project(event: ShortleashProjectionEvent): Promise<void>;
+	reconcile(authoritativeStatus: PipelineStatus): Promise<ShortleashBeadsReconciliation>;
 }
 
 /** Project lifecycle milestones into the input Bead without closing it authoritatively. */
-export function createSwarmBeadsProjector(
+export function createShortleashBeadsProjector(
 	beadId: string,
 	cwd: string,
-	options: { run?: SwarmBeadsCommandRunner } = {},
-): SwarmBeadsProjector {
+	options: { run?: ShortleashBeadsCommandRunner } = {},
+): ShortleashBeadsProjector {
 	const run = options.run ?? runBd;
 	return {
 		targetId: beadId,
-		async project(event: SwarmProjectionEvent): Promise<void> {
+		async project(event: ShortleashProjectionEvent): Promise<void> {
 			const detail = event.detail ? ` — ${event.detail}` : "";
-			const note = `[swarm:${event.swarmName}] ${event.type}: ${event.status}${detail}`;
+			const note = `[shortleash:${event.shortleashName}] ${event.type}: ${event.status}${detail}`;
 			const bead = await readBead(beadId, cwd, run);
 			if (!bead) throw new Error(`Bead '${beadId}' no longer exists.`);
 			if (bead.notes?.split("\n").some(line => line.trim() === note)) return;
 			const notes = [bead.notes?.trim(), note].filter(Boolean).join("\n");
 			await run(["update", beadId, "--notes", notes], cwd);
 		},
-		async reconcile(authoritativeStatus: PipelineStatus): Promise<SwarmBeadsReconciliation> {
+		async reconcile(authoritativeStatus: PipelineStatus): Promise<ShortleashBeadsReconciliation> {
 			const bead = await readBead(beadId, cwd, run);
 			if (!bead) {
 				return {
@@ -244,24 +244,28 @@ async function runBd(args: string[], cwd: string): Promise<string> {
 	if (code !== 0) {
 		const detail = stderr.trim() || stdout.trim() || `exit code ${code}`;
 		if (/(?:not found|no issue|does not exist|unknown issue)/i.test(detail)) {
-			throw new MissingSwarmBeadError(`Bead '${args[1] ?? "unknown"}' was not found.`);
+			throw new MissingShortleashBeadError(`Bead '${args[1] ?? "unknown"}' was not found.`);
 		}
 		throw new Error(`bd ${args.join(" ")} failed: ${detail}`);
 	}
 	return stdout;
 }
 
-interface SwarmBeadSnapshot {
+interface ShortleashBeadSnapshot {
 	status?: string;
 	notes?: string;
 }
 
-async function readBead(id: string, cwd: string, run: SwarmBeadsCommandRunner): Promise<SwarmBeadSnapshot | undefined> {
+async function readBead(
+	id: string,
+	cwd: string,
+	run: ShortleashBeadsCommandRunner,
+): Promise<ShortleashBeadSnapshot | undefined> {
 	let stdout: string;
 	try {
 		stdout = await run(["show", id, "--json"], cwd);
 	} catch (error) {
-		if (error instanceof MissingSwarmBeadError) return undefined;
+		if (error instanceof MissingShortleashBeadError) return undefined;
 		throw error;
 	}
 	let parsed: unknown;

@@ -15,61 +15,50 @@ export {
 } from "./beads/hooks";
 export { default } from "./extension";
 export type {
-	ResolvedSwarmInput,
-	SwarmBeadRecord,
-	SwarmBeadsCommandRunner,
-	SwarmBeadsProjector,
-	SwarmProjectionEvent,
-	SwarmProjectionEventType,
+	ResolvedShortleashInput,
+	ShortleashBeadRecord,
+	ShortleashBeadsCommandRunner,
+	ShortleashBeadsProjector,
+	ShortleashProjectionEvent,
+	ShortleashProjectionEventType,
 } from "./orchestration/adapters/beads";
 export {
-	createSwarmBeadsProjector,
+	createShortleashBeadsProjector,
 	isIssueReference,
-	resolveSwarmInput,
-	swarmDefinitionFromBead,
+	resolveShortleashInput,
+	shortleashDefinitionFromBead,
 } from "./orchestration/adapters/beads";
-export type {
-	HerdrCallOptions,
-	HerdrControl,
-	HerdrError,
-	HerdrPane,
-	HerdrResult,
-	HerdrTab,
-} from "./orchestration/adapters/herdr";
 export {
-	CliHerdrControl,
-	createHerdrSwarmSession,
-	HerdrSwarmSession,
-} from "./orchestration/adapters/herdr";
-export {
-	hasSwarmMetadata,
+	hasShortleashMetadata,
 	normalizeMetadataObject,
-	SWARM_DEFINITION_JSON_SCHEMA,
-	SWARM_METADATA_JSON_SCHEMA,
-	validateSwarmMetadata,
+	SHORTLEASH_DEFINITION_JSON_SCHEMA,
+	SHORTLEASH_METADATA_JSON_SCHEMA,
+	validateShortleashMetadata,
 } from "./orchestration/definition/metadata";
-export type { SwarmPlan } from "./orchestration/definition/plan";
-export { formatSwarmPlan, resolveSwarmPlan } from "./orchestration/definition/plan";
+export type { ShortleashPlan } from "./orchestration/definition/plan";
+export { formatShortleashPlan, resolveShortleashPlan } from "./orchestration/definition/plan";
 export type {
-	SwarmAgent,
-	SwarmAgentExecution,
-	SwarmDefinition,
-	SwarmIsolationMode,
-	SwarmMode,
-	SwarmPolicyParam,
-	SwarmPolicyParams,
-	SwarmPolicyRef,
+	ShortleashAgent,
+	ShortleashIsolationMode,
+	ShortleashPolicyParam,
+	ShortleashPolicyParams,
+	ShortleashPolicyRef,
+	ShortleashPolicyRefObject,
 } from "./orchestration/definition/schema";
 export {
-	fingerprintSwarmDefinition,
+	fingerprintShortleashDefinition,
 	normalizePolicyParams,
-	parsePolicyRef,
-	parseSwarm,
-	serializeSwarmDefinition,
-	validateSwarmInput,
+	parseShortleash,
+	parseShortleashPolicyPath,
+	serializeShortleashDefinition,
+	validateShortleashInput,
 } from "./orchestration/definition/schema";
-export type { ClaimedSwarmResult, ClaimedSwarmRunnerOptions, ClaimedSwarmStatus } from "./orchestration/execution/auto";
-export { runClaimedSwarm } from "./orchestration/execution/auto";
+export type {
+	ClaimedShortleashResult,
+	ClaimedShortleashRunnerOptions,
+	ClaimedShortleashStatus,
+} from "./orchestration/execution/auto";
+export { runClaimedShortleash } from "./orchestration/execution/auto";
 export { mapWithConcurrency } from "./orchestration/execution/concurrency";
 export type { PipelineOptions, PipelineProgress, PipelineResult } from "./orchestration/execution/pipeline";
 export { PipelineController } from "./orchestration/execution/pipeline";
@@ -82,41 +71,32 @@ export type {
 	AgentToolAction,
 	PipelineStateUpdate,
 	PipelineStatus,
+	ShortleashPolicyObservationState,
+	ShortleashPolicyState,
+	ShortleashProjectionState,
+	ShortleashResultRecord,
+	ShortleashRunManifest,
+	ShortleashState,
 	StateInitOptions,
-	SwarmPolicyObservationState,
-	SwarmPolicyState,
-	SwarmProjectionState,
-	SwarmResultRecord,
-	SwarmRunManifest,
-	SwarmState,
 } from "./orchestration/execution/state";
 export { StateTracker } from "./orchestration/execution/state";
 export type {
-	LoadSwarmPluginsOptions,
-	LoadSwarmPluginsResult,
-	SwarmCheckDefinition,
-	SwarmCheckResult,
-	SwarmEvaluationDefinition,
-	SwarmEvaluationRecord,
-	SwarmEvaluationResult,
-	SwarmPluginAPI,
-	SwarmPluginDefinition,
-	SwarmPluginDiscoveryOptions,
-	SwarmPluginDiscoveryResult,
-	SwarmPluginExport,
-	SwarmPluginFactory,
-	SwarmPluginLogger,
-	SwarmPluginRegistration,
-	SwarmPolicyBoundary,
-	SwarmPolicyContext,
-	SwarmPolicyDecision,
-	SwarmPolicyFailure,
-	SwarmPolicyKind,
-	SwarmPolicyReferences,
-} from "./orchestration/policy/plugins";
-export {
-	defineSwarmPlugin,
-	discoverSwarmPluginPaths,
-	loadSwarmPlugins,
-	SwarmPolicyRegistry,
-} from "./orchestration/policy/plugins";
+	LoadShortleashPolicyModulesOptions,
+	LoadShortleashPolicyModulesResult,
+	ShortleashCheckModule,
+	ShortleashCheckResult,
+	ShortleashEvaluationModule,
+	ShortleashEvaluationRecord,
+	ShortleashEvaluationResult,
+	ShortleashPolicyBoundary,
+	ShortleashPolicyCaptureContext,
+	ShortleashPolicyContext,
+	ShortleashPolicyDecision,
+	ShortleashPolicyFailure,
+	ShortleashPolicyKind,
+	ShortleashPolicyModule,
+	ShortleashPolicyObservation,
+	ShortleashPolicyObservations,
+	ShortleashPolicyReferences,
+} from "./orchestration/policy/policies";
+export { loadShortleashPolicyModules, ShortleashPolicyRegistry } from "./orchestration/policy/policies";

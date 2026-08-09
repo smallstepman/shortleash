@@ -1,36 +1,31 @@
 /**
- * Pipeline controller for swarm execution.
+ * Pipeline controller for Shortleash execution.
  *
- * Orchestrates execution waves within each iteration:
- * - Agents in the same wave execute in parallel
- * - Waves execute sequentially (wave N+1 starts after wave N completes)
- * - For pipeline mode, iterations repeat the full DAG execution
+ * Agents in the same dependency wave execute in parallel, while waves execute
+ * sequentially. Each declared graph runs once; an agent's same-session policy
+ * corrections are represented as attempts in durable state.
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AgentSource, ModelRegistry, Settings, SingleResult } from "@oh-my-pi/pi-coding-agent";
-import type { SwarmBeadsProjector, SwarmProjectionEvent } from "../adapters/beads";
+import type { ShortleashBeadsProjector, ShortleashProjectionEvent } from "../adapters/beads";
 import {
-	resolveSwarmHistoryInheritance,
-	resolveSwarmIsolation,
-	type SwarmAgent,
-	type SwarmDefinition,
+	resolveShortleashHistoryInheritance,
+	resolveShortleashIsolation,
+	type ShortleashAgent,
+	type ShortleashDefinition,
 } from "../definition/schema";
 import type {
-	SwarmPolicyBoundary,
-	SwarmPolicyContext,
-	SwarmPolicyDecision,
-	SwarmPolicyObservations,
-	SwarmPolicyRegistry,
-} from "../policy/plugins";
+	ShortleashPolicyBoundary,
+	ShortleashPolicyContext,
+	ShortleashPolicyDecision,
+	ShortleashPolicyObservations,
+	ShortleashPolicyRegistry,
+} from "../policy/policies";
 import { mapWithConcurrency } from "./concurrency";
 import { buildDependencyGraph } from "./dag";
-import { executeSwarmAgent, type SwarmAgentRunner } from "./executor";
+import { executeShortleashAgent } from "./executor";
 import { createAbortSignalScope } from "./signals";
-import type { AgentStatus, StateTracker } from "./state";
-
-// ============================================================================
-// Types
-// ============================================================================
+import type { AgentStatus, ShortleashResultRecord, StateTracker } from "./state";
 
 export interface PipelineOptions {
 	workspace: string;
@@ -40,41 +35,55 @@ export interface PipelineOptions {
 	onProgress?: (state: PipelineProgress) => void;
 	modelRegistry?: ModelRegistry;
 	settings?: Settings;
-	policyRegistry?: SwarmPolicyRegistry;
-	beadsProjector?: SwarmBeadsProjector;
+	policyRegistry?: ShortleashPolicyRegistry;
+	beadsProjector?: ShortleashBeadsProjector;
 	/** Current parent OMP branch, copied into workers that request inheritance. */
 	parentMessages?: AgentMessage[];
-	/** Optional external worker backend; defaults to the in-process executor. */
-	agentRunner?: SwarmAgentRunner;
 }
 
 export interface PipelineProgress {
-	iteration: number;
-	targetCount: number;
 	currentWave: number;
 	totalWaves: number;
-	agents: Record<string, { status: AgentStatus; iteration: number }>;
+	agents: Record<string, { status: AgentStatus }>;
 }
 
 export interface PipelineResult {
 	status: "completed" | "failed" | "aborted";
-	iterations: number;
 	agentResults: Map<string, SingleResult[]>;
 	errors: string[];
-	policy?: SwarmPolicyDecision;
+	policy?: ShortleashPolicyDecision;
 }
 
-// ============================================================================
-// Controller
-// ============================================================================
+interface GraphRunOptions {
+	workspace: string;
+	signal?: AbortSignal;
+	resume?: boolean;
+	emitProgress: (currentWave: number) => void;
+	modelRegistry?: ModelRegistry;
+	settings?: Settings;
+	policyRegistry?: ShortleashPolicyRegistry;
+	parentMessages?: AgentMessage[];
+	history: ReadonlyMap<string, readonly SingleResult[]>;
+	onWaveComplete?: (
+		wave: number,
+		latestResults: ReadonlyMap<string, SingleResult>,
+	) => Promise<ShortleashPolicyDecision | undefined>;
+}
+
+interface GraphRunResult {
+	results: Map<string, SingleResult>;
+	policyDecision?: ShortleashPolicyDecision;
+	failed: boolean;
+	aborted: boolean;
+}
 
 export class PipelineController {
-	#def: SwarmDefinition;
+	#def: ShortleashDefinition;
 	#waves: string[][];
 	#dependencies: Map<string, Set<string>>;
 	#stateTracker: StateTracker;
 
-	constructor(def: SwarmDefinition, waves: string[][], stateTracker: StateTracker) {
+	constructor(def: ShortleashDefinition, waves: string[][], stateTracker: StateTracker) {
 		this.#def = def;
 		this.#waves = waves;
 		this.#dependencies = buildDependencyGraph(def);
@@ -82,209 +91,130 @@ export class PipelineController {
 	}
 
 	async run(options: PipelineOptions): Promise<PipelineResult> {
-		const { workspace, signal, onProgress, modelRegistry, settings, policyRegistry, agentRunner } = options;
-		const allResults = new Map<string, SingleResult[]>();
+		const { workspace, signal, onProgress, modelRegistry, settings, policyRegistry } = options;
+		const history = new Map<string, readonly SingleResult[]>();
+		const agentResults = new Map<string, SingleResult[]>();
 		const errors: string[] = [];
-		let latestPolicy: SwarmPolicyDecision | undefined;
-		const targetCount = this.#def.targetCount;
-		const resumeIteration = options.resume
-			? Math.max(0, Math.min(targetCount, this.#stateTracker.state.nextIteration))
-			: 0;
+		let latestPolicy: ShortleashPolicyDecision | undefined;
 
-		for (const name of this.#def.agents.keys()) {
-			allResults.set(
-				name,
-				options.resume ? loadCompletedHistory(this.#stateTracker.state.results[name], resumeIteration) : [],
-			);
+		if (options.resume) {
+			for (const [agentName, records] of Object.entries(this.#stateTracker.state.results)) {
+				history.set(
+					agentName,
+					records.map(record => record.result),
+				);
+				const latest = loadLatestResult(records);
+				if (latest && !resultFailed(latest)) agentResults.set(agentName, [latest]);
+			}
 		}
 
 		await this.#stateTracker.appendOrchestratorLog(
-			`Pipeline '${this.#def.name}' starting: mode=${this.#def.mode} iterations=${targetCount} waves=${this.#waves.length} agents=${this.#def.agents.size} failurePolicy=${this.#def.failurePolicy}${options.resume ? " (resume)" : ""}`,
+			`Pipeline '${this.#def.name}' starting: waves=${this.#waves.length} agents=${this.#def.agents.size} failurePolicy=${this.#def.failurePolicy}${options.resume ? " (resume)" : ""}`,
 		);
 		await this.#project(options.beadsProjector, {
 			type: "started",
-			swarmName: this.#def.name,
+			shortleashName: this.#def.name,
 			status: "running",
 			detail: options.resume ? "resumed" : "started",
 		});
 
 		try {
-			for (let iteration = resumeIteration; iteration < targetCount; iteration++) {
-				if (signal?.aborted) {
-					return await this.#abort(allResults, errors, iteration, latestPolicy, options.beadsProjector);
-				}
+			await this.#stateTracker.updatePipeline({
+				status: "running",
+				currentWave: 0,
+				completedAt: undefined,
+			});
 
-				await this.#stateTracker.updatePipeline({
-					status: "running",
-					iteration,
-					nextIteration: iteration,
-					currentWave: 0,
-					completedAt: undefined,
+			const emitProgress = (currentWave: number) => {
+				onProgress?.({
+					currentWave,
+					totalWaves: this.#waves.length,
+					agents: this.#buildProgressSnapshot(),
 				});
-				await this.#stateTracker.appendOrchestratorLog(`--- Iteration ${iteration + 1}/${targetCount} ---`);
+			};
 
-				const emitProgress = (currentWave: number) => {
-					onProgress?.({
-						iteration,
-						targetCount,
-						currentWave,
-						totalWaves: this.#waves.length,
-						agents: this.#buildProgressSnapshot(),
-					});
-				};
-
-				const iterationRun = await this.#runIteration(iteration, {
-					workspace,
-					signal,
-					resume: options.resume && iteration === resumeIteration,
-					emitProgress,
-					modelRegistry,
-					settings,
-					policyRegistry,
-					agentRunner,
-					parentMessages: options.parentMessages,
-					history: allResults,
-					onWaveComplete: async (wave, latestResults) => {
-						const decision = await this.#evaluatePolicy(
-							policyRegistry,
-							"wave",
-							iteration,
-							wave,
-							latestResults,
-							this.#historyWithCurrent(allResults, latestResults),
-							options,
-							this.#waves[wave] ?? [],
-						);
-						latestPolicy = decision ?? latestPolicy;
-						return decision;
-					},
-				});
-
-				for (const [agentName, result] of iterationRun.results) {
-					const history = allResults.get(agentName);
-					if (!history) throw new Error(`Missing result history for agent '${agentName}'.`);
-					history.push(result);
-					if (resultFailed(result)) {
-						errors.push(
-							`${agentName} (iteration ${iteration + 1}): ${result.error || result.abortReason || `exit code ${result.exitCode}`}`,
-						);
-					}
-				}
-
-				if (signal?.aborted || iterationRun.aborted) {
-					return await this.#abort(allResults, errors, iteration, latestPolicy, options.beadsProjector);
-				}
-
-				if (iterationRun.policyDecision && !iterationRun.policyDecision.accepted) {
-					errors.push(...formatPolicyErrors(iterationRun.policyDecision));
-					await this.#stateTracker.updatePipeline({ status: "failed", completedAt: Date.now() });
-					await this.#stateTracker.appendOrchestratorLog(
-						`Pipeline blocked by policy at wave ${iterationRun.policyDecision.boundary}`,
+			const graphRun = await this.#runGraph({
+				workspace,
+				signal,
+				resume: options.resume,
+				emitProgress,
+				modelRegistry,
+				settings,
+				policyRegistry,
+				parentMessages: options.parentMessages,
+				history,
+				onWaveComplete: async (wave, latestResults) => {
+					const decision = await this.#evaluatePolicy(
+						policyRegistry,
+						"wave",
+						wave,
+						latestResults,
+						this.#historyWithCurrent(history, latestResults),
+						options,
+						this.#waves[wave] ?? [],
 					);
-					await this.#project(options.beadsProjector, {
-						type: "blocked",
-						swarmName: this.#def.name,
-						status: "failed",
-						detail: `policy at ${iterationRun.policyDecision.boundary}`,
-					});
-					return {
-						status: "failed",
-						iterations: iteration + 1,
-						agentResults: allResults,
-						errors,
-						policy: iterationRun.policyDecision,
-					};
-				}
+					latestPolicy = decision ?? latestPolicy;
+					return decision;
+				},
+			});
 
-				if (iterationRun.failed && this.#def.failurePolicy !== "continue") {
-					await this.#stateTracker.updatePipeline({ status: "failed", completedAt: Date.now() });
-					await this.#stateTracker.appendOrchestratorLog(
-						`Pipeline stopped after agent failure (${this.#def.failurePolicy})`,
-					);
-					await this.#project(options.beadsProjector, {
-						type: "failed",
-						swarmName: this.#def.name,
-						status: "failed",
-						detail: `agent failure at iteration ${iteration + 1}`,
-					});
-					return {
-						status: "failed",
-						iterations: iteration + 1,
-						agentResults: allResults,
-						errors,
-						policy: latestPolicy,
-					};
+			for (const [agentName, result] of graphRun.results) {
+				agentResults.set(agentName, [result]);
+				if (resultFailed(result)) {
+					errors.push(`${agentName}: ${result.error || result.abortReason || `exit code ${result.exitCode}`}`);
 				}
-
-				const iterationDecision = await this.#evaluatePolicy(
-					policyRegistry,
-					"iteration",
-					iteration,
-					undefined,
-					iterationRun.results,
-					allResults,
-					options,
-					this.#def.agentOrder,
-				);
-				if (signal?.aborted) {
-					return await this.#abort(allResults, errors, iteration, latestPolicy, options.beadsProjector);
-				}
-
-				latestPolicy = iterationDecision ?? latestPolicy;
-				if (iterationDecision && !iterationDecision.accepted) {
-					errors.push(...formatPolicyErrors(iterationDecision));
-					await this.#stateTracker.updatePipeline({ status: "failed", completedAt: Date.now() });
-					await this.#stateTracker.appendOrchestratorLog("Pipeline blocked by policy at iteration boundary");
-					await this.#project(options.beadsProjector, {
-						type: "blocked",
-						swarmName: this.#def.name,
-						status: "failed",
-						detail: "policy at iteration boundary",
-					});
-					return {
-						status: "failed",
-						iterations: iteration + 1,
-						agentResults: allResults,
-						errors,
-						policy: iterationDecision,
-					};
-				}
-
-				await this.#stateTracker.updatePipeline({
-					nextIteration: iteration + 1,
-					currentWave: 0,
-				});
 			}
 
-			if (signal?.aborted) {
-				return await this.#abort(
-					allResults,
-					errors,
-					this.#stateTracker.state.iteration,
-					latestPolicy,
-					options.beadsProjector,
+			if (signal?.aborted || graphRun.aborted) {
+				return await this.#abort(agentResults, errors, latestPolicy, options.beadsProjector);
+			}
+
+			if (graphRun.policyDecision && !graphRun.policyDecision.accepted) {
+				errors.push(...formatPolicyErrors(graphRun.policyDecision));
+				await this.#stateTracker.updatePipeline({ status: "failed", completedAt: Date.now() });
+				await this.#stateTracker.appendOrchestratorLog(
+					`Pipeline blocked by policy at wave ${graphRun.policyDecision.boundary}`,
 				);
+				await this.#project(options.beadsProjector, {
+					type: "blocked",
+					shortleashName: this.#def.name,
+					status: "failed",
+					detail: `policy at ${graphRun.policyDecision.boundary}`,
+				});
+				return {
+					status: "failed",
+					agentResults,
+					errors,
+					policy: graphRun.policyDecision,
+				};
+			}
+
+			if (graphRun.failed && this.#def.failurePolicy !== "continue") {
+				await this.#stateTracker.updatePipeline({ status: "failed", completedAt: Date.now() });
+				await this.#stateTracker.appendOrchestratorLog(
+					`Pipeline stopped after agent failure (${this.#def.failurePolicy})`,
+				);
+				await this.#project(options.beadsProjector, {
+					type: "failed",
+					shortleashName: this.#def.name,
+					status: "failed",
+					detail: "agent failure",
+				});
+				return { status: "failed", agentResults, errors, policy: latestPolicy };
 			}
 
 			const completeDecision = await this.#evaluatePolicy(
 				policyRegistry,
 				"complete",
-				targetCount - 1,
 				undefined,
-				this.#latestResults(allResults),
-				allResults,
+				graphRun.results,
+				this.#historyWithCurrent(history, graphRun.results),
 				options,
 				this.#def.agentOrder,
 			);
 			latestPolicy = completeDecision ?? latestPolicy;
 			if (signal?.aborted) {
-				return await this.#abort(
-					allResults,
-					errors,
-					this.#stateTracker.state.iteration,
-					latestPolicy,
-					options.beadsProjector,
-				);
+				return await this.#abort(agentResults, errors, latestPolicy, options.beadsProjector);
 			}
 			if (completeDecision && !completeDecision.accepted) {
 				errors.push(...formatPolicyErrors(completeDecision));
@@ -292,78 +222,55 @@ export class PipelineController {
 				await this.#stateTracker.appendOrchestratorLog("Pipeline blocked by completion policy");
 				await this.#project(options.beadsProjector, {
 					type: "blocked",
-					swarmName: this.#def.name,
+					shortleashName: this.#def.name,
 					status: "failed",
 					detail: "completion policy",
 				});
-				return {
-					status: "failed",
-					iterations: targetCount,
-					agentResults: allResults,
-					errors,
-					policy: completeDecision,
-				};
+				return { status: "failed", agentResults, errors, policy: completeDecision };
 			}
+
 			const status = errors.length > 0 ? ("failed" as const) : ("completed" as const);
-			await this.#stateTracker.updatePipeline({ status, nextIteration: targetCount, completedAt: Date.now() });
+			await this.#stateTracker.updatePipeline({ status, completedAt: Date.now() });
 			await this.#project(options.beadsProjector, {
 				type: status === "completed" ? "completed" : "failed",
-				swarmName: this.#def.name,
+				shortleashName: this.#def.name,
 				status,
 				detail: `${errors.length} error(s)`,
 			});
-			return { status, iterations: targetCount, agentResults: allResults, errors, policy: latestPolicy };
+			return { status, agentResults, errors, policy: latestPolicy };
 		} catch (err) {
-			if (signal?.aborted)
-				return await this.#abort(
-					allResults,
-					errors,
-					this.#stateTracker.state.iteration,
-					latestPolicy,
-					options.beadsProjector,
-				);
+			if (signal?.aborted) return await this.#abort(agentResults, errors, latestPolicy, options.beadsProjector);
 			const error = err instanceof Error ? err.message : String(err);
 			await this.#project(options.beadsProjector, {
 				type: "failed",
-				swarmName: this.#def.name,
+				shortleashName: this.#def.name,
 				status: "failed",
 				detail: "fatal runtime error",
 			});
 			errors.push(error);
-			return {
-				status: "failed",
-				iterations: resumeIteration,
-				agentResults: allResults,
-				errors,
-				policy: latestPolicy,
-			};
+			return { status: "failed", agentResults, errors, policy: latestPolicy };
 		}
 	}
 
 	async #abort(
 		agentResults: Map<string, SingleResult[]>,
 		errors: string[],
-		iteration: number,
-		policy: SwarmPolicyDecision | undefined,
-		beadsProjector?: SwarmBeadsProjector,
+		policy: ShortleashPolicyDecision | undefined,
+		beadsProjector?: ShortleashBeadsProjector,
 	): Promise<PipelineResult> {
 		await this.#stateTracker.updatePipeline({ status: "aborted", completedAt: Date.now() });
-		await this.#stateTracker.appendOrchestratorLog(`Pipeline aborted during iteration ${iteration + 1}`);
+		const wave = this.#stateTracker.state.currentWave + 1;
+		await this.#stateTracker.appendOrchestratorLog(`Pipeline aborted during wave ${wave}`);
 		await this.#project(beadsProjector, {
 			type: "aborted",
-			swarmName: this.#def.name,
+			shortleashName: this.#def.name,
 			status: "aborted",
-			detail: `iteration ${iteration + 1}`,
+			detail: `wave ${wave}`,
 		});
-		return {
-			status: "aborted",
-			iterations: iteration,
-			agentResults,
-			errors,
-			policy,
-		};
+		return { status: "aborted", agentResults, errors, policy };
 	}
-	async #project(projector: SwarmBeadsProjector | undefined, event: SwarmProjectionEvent): Promise<void> {
+
+	async #project(projector: ShortleashBeadsProjector | undefined, event: ShortleashProjectionEvent): Promise<void> {
 		if (!projector) return;
 		try {
 			await projector.project(event);
@@ -375,30 +282,7 @@ export class PipelineController {
 		}
 	}
 
-	async #runIteration(
-		iteration: number,
-		options: {
-			workspace: string;
-			signal?: AbortSignal;
-			resume?: boolean;
-			emitProgress: (currentWave: number) => void;
-			modelRegistry?: ModelRegistry;
-			settings?: Settings;
-			policyRegistry?: SwarmPolicyRegistry;
-			parentMessages?: AgentMessage[];
-			agentRunner?: SwarmAgentRunner;
-			history: ReadonlyMap<string, readonly SingleResult[]>;
-			onWaveComplete?: (
-				wave: number,
-				latestResults: ReadonlyMap<string, SingleResult>,
-			) => Promise<SwarmPolicyDecision | undefined>;
-		},
-	): Promise<{
-		results: Map<string, SingleResult>;
-		policyDecision?: SwarmPolicyDecision;
-		failed: boolean;
-		aborted: boolean;
-	}> {
+	async #runGraph(options: GraphRunOptions): Promise<GraphRunResult> {
 		const results = new Map<string, SingleResult>();
 		const blockedAgents = new Set<string>();
 		let failed = false;
@@ -406,19 +290,16 @@ export class PipelineController {
 
 		if (options.resume) {
 			for (const agentName of this.#def.agents.keys()) {
-				const result = loadLatestResult(this.#stateTracker.state.results[agentName], iteration);
+				const result = loadLatestResult(this.#stateTracker.state.results[agentName]);
 				if (result && !resultFailed(result)) results.set(agentName, result);
 			}
 		}
 
 		for (let waveIdx = 0; waveIdx < this.#waves.length; waveIdx++) {
 			const wave = this.#waves[waveIdx];
+			if (options.signal?.aborted) return { results, failed, aborted: true };
 
-			if (options.signal?.aborted) {
-				return { results, failed, aborted: true };
-			}
-
-			await this.#stateTracker.updatePipeline({ iteration, currentWave: waveIdx });
+			await this.#stateTracker.updatePipeline({ currentWave: waveIdx });
 			await this.#stateTracker.appendOrchestratorLog(
 				`Wave ${waveIdx + 1}/${this.#waves.length}: [${wave.join(", ")}]`,
 			);
@@ -426,36 +307,30 @@ export class PipelineController {
 			const runnable: Array<{ agentName: string; index: number }> = [];
 			for (const agentName of wave) {
 				if (results.has(agentName)) {
-					await this.#stateTracker.updateAgent(agentName, {
-						status: "completed",
-						iteration,
-						wave: waveIdx,
-					});
+					await this.#stateTracker.updateAgent(agentName, { status: "completed", wave: waveIdx });
 					continue;
 				}
 				if (
 					this.#def.failurePolicy === "skip_dependents" &&
 					[...(this.#dependencies.get(agentName) ?? [])].some(dependency => blockedAgents.has(dependency))
 				) {
-					const result = makeDependencyFailureResult(this.#def, agentName, iteration, agentIndex++);
+					const result = makeDependencyFailureResult(this.#def, agentName, agentIndex++);
 					results.set(agentName, result);
 					blockedAgents.add(agentName);
 					failed = true;
 					await this.#stateTracker.updateAgent(agentName, {
 						status: "skipped",
-						iteration,
 						wave: waveIdx,
 						error: result.error,
 						completedAt: Date.now(),
 					});
-					await this.#stateTracker.recordResult(agentName, iteration, 0, result);
+					await this.#stateTracker.recordResult(agentName, 0, result);
 					continue;
 				}
 				const currentIndex = agentIndex++;
 				runnable.push({ agentName, index: currentIndex });
 				await this.#stateTracker.updateAgent(agentName, {
 					status: "waiting",
-					iteration,
 					wave: waveIdx,
 					error: undefined,
 				});
@@ -464,14 +339,13 @@ export class PipelineController {
 
 			const waveResults = await mapWithConcurrency(
 				runnable,
-				(this.#def.maxConcurrency ?? runnable.length) || 1,
+				resolveTaskConcurrency(options.settings, runnable.length),
 				async ({ agentName, index: currentIndex }) => {
 					const agent = this.#def.agents.get(agentName);
-					if (!agent) throw new Error(`Unknown swarm agent '${agentName}'.`);
+					if (!agent) throw new Error(`Unknown Shortleash agent '${agentName}'.`);
 					const signalScope = createAbortSignalScope(options.signal, this.#def.agentTimeoutMs);
 					try {
 						const beforeContext = this.#buildAgentPolicyContext(
-							iteration,
 							waveIdx,
 							agentName,
 							0,
@@ -482,21 +356,18 @@ export class PipelineController {
 						const before = options.policyRegistry
 							? await options.policyRegistry.capture(this.#def, beforeContext, "before", agent)
 							: new Map<string, unknown>();
-						await this.#stateTracker.recordPolicyObservations(agentName, iteration, 0, "before", before);
+						await this.#stateTracker.recordPolicyObservations(agentName, 0, "before", before);
 						let beforeForAttempt = before;
-						const result = await (options.agentRunner ?? executeSwarmAgent)(agent, currentIndex, {
+						const result = await executeShortleashAgent(agent, currentIndex, {
 							workspace: options.workspace,
-							swarmName: this.#def.name,
-							iteration,
+							shortleashName: this.#def.name,
 							modelOverride: agent.model ?? this.#def.model,
 							signal: signalScope.signal,
-							onProgress: (_name, _progress) => {
-								options.emitProgress(waveIdx);
-							},
+							onProgress: (_name, _progress) => options.emitProgress(waveIdx),
 							modelRegistry: options.modelRegistry,
 							settings: options.settings,
-							workspaceIsolation: resolveSwarmIsolation(this.#def, agent),
-							inheritHistory: resolveSwarmHistoryInheritance(this.#def, agent),
+							workspaceIsolation: resolveShortleashIsolation(this.#def, agent),
+							inheritHistory: resolveShortleashHistoryInheritance(this.#def, agent),
 							parentMessages: options.parentMessages,
 							stateTracker: this.#stateTracker,
 							onFinalize:
@@ -505,7 +376,6 @@ export class PipelineController {
 											const finalized = await this.#finalizeAgent(
 												options.policyRegistry!,
 												agent,
-												iteration,
 												waveIdx,
 												attempt,
 												agentName,
@@ -525,7 +395,7 @@ export class PipelineController {
 						const error = err instanceof Error ? err.message : String(err);
 						const failResult: SingleResult = {
 							index: currentIndex,
-							id: `swarm-${this.#def.name}-${agentName}-${iteration}`,
+							id: `shortleash-${this.#def.name}-${agentName}`,
 							agent: agentName,
 							agentSource: "project" as AgentSource,
 							task: agent.task,
@@ -567,26 +437,24 @@ export class PipelineController {
 		return { results, failed, aborted: options.signal?.aborted ?? false };
 	}
 
-	#hasAgentPolicies(agent: SwarmAgent): boolean {
+	#hasAgentPolicies(agent: ShortleashAgent): boolean {
 		return agent.checks.length > 0 || agent.evals.length > 0;
 	}
 
 	#buildAgentPolicyContext(
-		iteration: number,
 		wave: number,
 		agentName: string,
 		attempt: number,
 		latestResults: ReadonlyMap<string, SingleResult>,
 		history: ReadonlyMap<string, readonly SingleResult[]>,
 		workspace: string,
-	): SwarmPolicyContext {
+	): ShortleashPolicyContext {
 		return {
 			definition: this.#def,
 			cwd: workspace,
 			workspace,
-			swarmDir: this.#stateTracker.swarmDir,
+			shortleashDir: this.#stateTracker.shortleashDir,
 			boundary: "agent",
-			iteration,
 			wave,
 			attempt,
 			agent: agentName,
@@ -598,9 +466,8 @@ export class PipelineController {
 	}
 
 	async #finalizeAgent(
-		registry: SwarmPolicyRegistry,
-		agent: SwarmAgent,
-		iteration: number,
+		registry: ShortleashPolicyRegistry,
+		agent: ShortleashAgent,
 		wave: number,
 		attempt: number,
 		agentName: string,
@@ -609,36 +476,24 @@ export class PipelineController {
 		workspace: string,
 		before: ReadonlyMap<string, unknown>,
 		candidate: SingleResult,
-	): Promise<{
-		feedback?: string;
-		beforeForNextAttempt: ReadonlyMap<string, unknown>;
-	}> {
+	): Promise<{ feedback?: string; beforeForNextAttempt: ReadonlyMap<string, unknown> }> {
 		const candidateResults = new Map(latestResults);
 		candidateResults.set(agentName, candidate);
-		const context = this.#buildAgentPolicyContext(
-			iteration,
-			wave,
-			agentName,
-			attempt,
-			candidateResults,
-			history,
-			workspace,
-		);
-		await this.#stateTracker.recordPolicyObservations(agentName, iteration, attempt, "before", before);
+		const context = this.#buildAgentPolicyContext(wave, agentName, attempt, candidateResults, history, workspace);
+		await this.#stateTracker.recordPolicyObservations(agentName, attempt, "before", before);
 		const after = await registry.capture(this.#def, context, "after", agent);
-		await this.#stateTracker.recordPolicyObservations(agentName, iteration, attempt, "after", after);
-		const observations: SwarmPolicyObservations = new Map(
+		await this.#stateTracker.recordPolicyObservations(agentName, attempt, "after", after);
+		const observations: ShortleashPolicyObservations = new Map(
 			[...new Set([...before.keys(), ...after.keys()])].map(key => [
 				key,
 				{ before: before.get(key), after: after.get(key) },
 			]),
 		);
 		const decision = await registry.evaluate(this.#def, context, agent, observations);
-		await this.#stateTracker.updatePolicy(decision, { iteration, wave, agent: agentName });
+		await this.#stateTracker.updatePolicy(decision, { wave, agent: agentName });
 		if (decision.accepted) return { beforeForNextAttempt: after };
 
 		const nextContext = this.#buildAgentPolicyContext(
-			iteration,
 			wave,
 			agentName,
 			attempt + 1,
@@ -647,13 +502,7 @@ export class PipelineController {
 			workspace,
 		);
 		const beforeForNextAttempt = await registry.capture(this.#def, nextContext, "before", agent);
-		await this.#stateTracker.recordPolicyObservations(
-			agentName,
-			iteration,
-			attempt + 1,
-			"before",
-			beforeForNextAttempt,
-		);
+		await this.#stateTracker.recordPolicyObservations(agentName, attempt + 1, "before", beforeForNextAttempt);
 		return {
 			feedback: formatAgentPolicyFeedback(agentName, decision),
 			beforeForNextAttempt,
@@ -661,15 +510,14 @@ export class PipelineController {
 	}
 
 	async #evaluatePolicy(
-		registry: SwarmPolicyRegistry | undefined,
-		boundary: SwarmPolicyBoundary,
-		iteration: number,
+		registry: ShortleashPolicyRegistry | undefined,
+		boundary: ShortleashPolicyBoundary,
 		wave: number | undefined,
 		latestResults: ReadonlyMap<string, SingleResult>,
 		history: ReadonlyMap<string, readonly SingleResult[]>,
 		options: PipelineOptions,
 		scopedAgents: readonly string[],
-	): Promise<SwarmPolicyDecision | undefined> {
+	): Promise<ShortleashPolicyDecision | undefined> {
 		if (!registry) return undefined;
 
 		const hasGlobalPolicies = this.#def.checks.length > 0 || this.#def.evals.length > 0;
@@ -679,36 +527,33 @@ export class PipelineController {
 		});
 		if (!hasGlobalPolicies && agentNames.length === 0) return undefined;
 
-		const context: SwarmPolicyContext = {
+		const context: ShortleashPolicyContext = {
 			definition: this.#def,
 			cwd: options.cwd ?? options.workspace,
 			params: {},
 			workspace: options.workspace,
-			swarmDir: this.#stateTracker.swarmDir,
+			shortleashDir: this.#stateTracker.shortleashDir,
 			boundary,
-			iteration,
 			wave,
 			latestResults,
 			history,
 			state: this.#stateTracker.state,
 		};
-		const decisions: SwarmPolicyDecision[] = [];
-		if (hasGlobalPolicies) {
-			decisions.push(await registry.evaluate(this.#def, context));
-		}
+		const decisions: ShortleashPolicyDecision[] = [];
+		if (hasGlobalPolicies) decisions.push(await registry.evaluate(this.#def, context));
 		for (const agentName of agentNames) {
 			const agent = this.#def.agents.get(agentName);
-			if (!agent) throw new Error(`Unknown swarm agent '${agentName}'.`);
+			if (!agent) throw new Error(`Unknown Shortleash agent '${agentName}'.`);
 			decisions.push(await registry.evaluate(this.#def, { ...context, agent: agentName }, agent));
 		}
 
-		const decision: SwarmPolicyDecision = {
+		const decision: ShortleashPolicyDecision = {
 			boundary,
 			accepted: decisions.every(item => item.accepted),
 			failures: decisions.flatMap(item => item.failures),
 			evaluations: decisions.flatMap(item => item.evaluations),
 		};
-		await this.#stateTracker.updatePolicy(decision, { iteration, wave });
+		await this.#stateTracker.updatePolicy(decision, { wave });
 		return decision;
 	}
 
@@ -724,19 +569,10 @@ export class PipelineController {
 		return combined;
 	}
 
-	#latestResults(history: ReadonlyMap<string, readonly SingleResult[]>): Map<string, SingleResult> {
-		const latest = new Map<string, SingleResult>();
-		for (const [agentName, results] of history) {
-			const result = results.at(-1);
-			if (result) latest.set(agentName, result);
-		}
-		return latest;
-	}
-
-	#buildProgressSnapshot(): Record<string, { status: AgentStatus; iteration: number }> {
-		const snapshot: Record<string, { status: AgentStatus; iteration: number }> = {};
+	#buildProgressSnapshot(): Record<string, { status: AgentStatus }> {
+		const snapshot: Record<string, { status: AgentStatus }> = {};
 		for (const [name, agent] of Object.entries(this.#stateTracker.state.agents)) {
-			snapshot[name] = { status: agent.status, iteration: agent.iteration };
+			snapshot[name] = { status: agent.status };
 		}
 		return snapshot;
 	}
@@ -746,40 +582,15 @@ function resultFailed(result: SingleResult): boolean {
 	return result.exitCode !== 0 || Boolean(result.error) || Boolean(result.aborted);
 }
 
-function loadLatestResult(
-	records: ReadonlyArray<{ iteration: number; attempt: number; result: SingleResult }> | undefined,
-	iteration: number,
-): SingleResult | undefined {
-	const candidates = (records ?? []).filter(record => record.iteration === iteration);
-	candidates.sort((left, right) => left.attempt - right.attempt);
-	return candidates.at(-1)?.result;
+function loadLatestResult(records: ReadonlyArray<ShortleashResultRecord> | undefined): SingleResult | undefined {
+	return records?.at(-1)?.result;
 }
 
-function loadCompletedHistory(
-	records: ReadonlyArray<{ iteration: number; attempt: number; result: SingleResult }> | undefined,
-	beforeIteration: number,
-): SingleResult[] {
-	const byIteration = new Map<number, { attempt: number; result: SingleResult }>();
-	for (const record of records ?? []) {
-		if (record.iteration >= beforeIteration) continue;
-		const previous = byIteration.get(record.iteration);
-		if (!previous || record.attempt >= previous.attempt) {
-			byIteration.set(record.iteration, { attempt: record.attempt, result: record.result });
-		}
-	}
-	return [...byIteration.entries()].sort(([left], [right]) => left - right).map(([, value]) => value.result);
-}
-
-function makeDependencyFailureResult(
-	definition: SwarmDefinition,
-	agentName: string,
-	iteration: number,
-	index: number,
-): SingleResult {
+function makeDependencyFailureResult(definition: ShortleashDefinition, agentName: string, index: number): SingleResult {
 	const error = `Skipped because a dependency failed (${definition.failurePolicy}).`;
 	return {
 		index,
-		id: `swarm-${definition.name}-${agentName}-${iteration}-skipped`,
+		id: `shortleash-${definition.name}-${agentName}-skipped`,
 		agent: agentName,
 		agentSource: "project" as AgentSource,
 		task: definition.agents.get(agentName)?.task ?? "",
@@ -794,14 +605,21 @@ function makeDependencyFailureResult(
 	};
 }
 
-function formatPolicyErrors(decision: SwarmPolicyDecision): string[] {
+function formatPolicyErrors(decision: ShortleashPolicyDecision): string[] {
 	return decision.failures.map(failure => `${failure.source} ${failure.id}: ${failure.message}`);
 }
-function formatAgentPolicyFeedback(agentName: string, decision: SwarmPolicyDecision): string {
+function formatAgentPolicyFeedback(agentName: string, decision: ShortleashPolicyDecision): string {
 	const failures = formatPolicyErrors(decision);
 	return [
 		`Agent '${agentName}' finalization was rejected by runtime policy.`,
 		...failures.map(failure => `- ${failure}`),
 		"Correct the work described by these findings, then continue working in this same session.",
 	].join("\n");
+}
+
+function resolveTaskConcurrency(settings: Settings | undefined, itemCount: number): number {
+	if (itemCount === 0) return 1;
+	const configured = settings?.get("task.maxConcurrency");
+	if (typeof configured !== "number" || !Number.isFinite(configured) || configured <= 0) return itemCount;
+	return Math.max(1, Math.trunc(configured));
 }

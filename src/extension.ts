@@ -1,6 +1,6 @@
 /**
- * Shortleash Extension — multi-agent pipeline orchestration from JSON/YAML definitions.
- * - /shortleash run <file.json|file.yaml> — Execute a swarm pipeline
+ * Shortleash Extension — multi-agent pipeline orchestration from JSON definitions.
+ * - /shortleash run <file.json> — Execute a Shortleash pipeline
  * - /shortleash status             — Show current pipeline status
  * - /shortleash reconcile <input>  — Detect Beads projection drift
  *
@@ -14,50 +14,49 @@ import { formatDuration } from "@oh-my-pi/pi-utils";
 import { extractBeadsIssueRecords, runBeadsJson } from "./beads/client";
 import { registerBeadsHooks } from "./beads/hooks";
 import {
-	createSwarmBeadsProjector,
-	type SwarmBeadsProjector,
-	type SwarmProjectionEvent,
+	createShortleashBeadsProjector,
+	type ShortleashBeadsProjector,
+	type ShortleashProjectionEvent,
 } from "./orchestration/adapters/beads";
-import { createHerdrSwarmSession } from "./orchestration/adapters/herdr";
-import { createSwarmRunManifest } from "./orchestration/definition/manifest";
-import { hasSwarmMetadata, validateSwarmMetadata } from "./orchestration/definition/metadata";
-import { formatSwarmPlan, resolveSwarmPlan, type SwarmPlan } from "./orchestration/definition/plan";
-import { fingerprintSwarmDefinition, type SwarmDefinition } from "./orchestration/definition/schema";
-import { type ClaimedSwarmResult, runClaimedSwarm } from "./orchestration/execution/auto";
-import { executeDirectSwarm } from "./orchestration/execution/executor";
+import { createShortleashRunManifest } from "./orchestration/definition/manifest";
+import { hasShortleashMetadata, validateShortleashMetadata } from "./orchestration/definition/metadata";
+import { formatShortleashPlan, resolveShortleashPlan, type ShortleashPlan } from "./orchestration/definition/plan";
+import { fingerprintShortleashDefinition, type ShortleashDefinition } from "./orchestration/definition/schema";
+import { type ClaimedShortleashResult, runClaimedShortleash } from "./orchestration/execution/auto";
+import { executeDirectShortleash } from "./orchestration/execution/executor";
 import { PipelineController, type PipelineResult } from "./orchestration/execution/pipeline";
 import { StateTracker } from "./orchestration/execution/state";
 import type {
-	SwarmPolicyContext,
-	SwarmPolicyDecision,
-	SwarmPolicyObservations,
-	SwarmPolicyRegistry,
-} from "./orchestration/policy/plugins";
-import { attachSwarmDashboard } from "./orchestration/presentation/dashboard";
-import { renderSwarmProgress } from "./orchestration/presentation/render";
+	ShortleashPolicyContext,
+	ShortleashPolicyDecision,
+	ShortleashPolicyObservations,
+	ShortleashPolicyRegistry,
+} from "./orchestration/policy/policies";
+import { attachShortleashDashboard } from "./orchestration/presentation/dashboard";
+import { renderShortleashProgress } from "./orchestration/presentation/render";
 
-interface DirectSwarmRun {
+interface DirectShortleashRun {
 	sessionId: string;
-	definition: SwarmDefinition;
+	definition: ShortleashDefinition;
 	workspace: string;
 	cwd: string;
 	stateTracker: StateTracker;
-	policyRegistry: SwarmPolicyRegistry;
-	beadsProjector?: SwarmBeadsProjector;
+	policyRegistry: ShortleashPolicyRegistry;
+	beadsProjector?: ShortleashBeadsProjector;
 	attempt: number;
 	before: ReadonlyMap<string, unknown>;
 	processing: boolean;
 }
 
 export default function shortleashExtension(pi: ExtensionAPI): void {
-	const directRuns = new Map<string, DirectSwarmRun>();
+	const directRuns = new Map<string, DirectShortleashRun>();
 	if (typeof pi.on === "function") {
 		pi.on("agent_end", async (event, ctx) => {
 			const run = directRuns.get(ctx.sessionManager.getSessionId());
 			if (!run || event.willContinue || run.processing) return;
 			run.processing = true;
 			try {
-				await finalizeDirectSwarm(run, event.messages, ctx, pi, directRuns);
+				await finalizeDirectShortleash(run, event.messages, ctx, pi, directRuns);
 			} catch (error) {
 				directRuns.delete(run.sessionId);
 				await run.stateTracker.updatePipeline({ status: "failed", completedAt: Date.now() }).catch(() => {});
@@ -73,26 +72,25 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 	}
 	registerBeadsHooks(pi, {
 		onClaim: (issueId, ctx, signal) =>
-			runClaimedSwarm(issueId, {
+			runClaimedShortleash(issueId, {
 				ctx,
 				settings: pi.pi.settings,
 				signal,
-				logger: pi.logger,
 				directRunner: async (plan, runOptions) => {
 					if (signal.aborted) throw signal.reason;
-					await startDirectSwarm(plan, ctx, pi, { resume: false, restart: runOptions.restart }, directRuns);
+					await startDirectShortleash(plan, ctx, pi, { resume: false, restart: runOptions.restart }, directRuns);
 					return {
 						status: "not-started",
-						swarmName: plan.definition.name,
+						shortleashName: plan.definition.name,
 						reason: "Direct execution was queued in the current OMP session.",
-					} satisfies ClaimedSwarmResult;
+					} satisfies ClaimedShortleashResult;
 				},
 			}),
 	});
 
 	const getArgumentCompletions = createShortleashArgumentCompletions(pi);
 	pi.registerCommand("shortleash", {
-		description: "Run a multi-agent swarm pipeline from JSON/YAML definitions",
+		description: "Run a multi-agent Shortleash pipeline from JSON definitions",
 		// The host's TUI awaits Promise-returning completions, while the extension
 		// declaration currently exposes the older synchronous callback type.
 		getArgumentCompletions: getArgumentCompletions as unknown as ShortleashArgumentCompletion,
@@ -105,7 +103,7 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 					const definitionPath = parts[1];
 					if (!definitionPath) {
 						ctx.ui.notify(
-							"Usage: /shortleash run <path/to/pipeline.json|yaml|issue-id> [--resume|--restart]",
+							"Usage: /shortleash run <path/to/pipeline.json|issue-id> [--resume|--restart]",
 							"error",
 						);
 						return;
@@ -120,7 +118,7 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 				case "plan":
 				case "inspect": {
 					if (!parts[1]) {
-						ctx.ui.notify(`Usage: /shortleash ${subcommand} <path/to/pipeline.json|yaml|issue-id>`, "error");
+						ctx.ui.notify(`Usage: /shortleash ${subcommand} <path/to/pipeline.json|issue-id>`, "error");
 						return;
 					}
 					await handlePlan(parts[1], ctx, pi);
@@ -128,7 +126,7 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 				}
 				case "evaluate": {
 					if (!parts[1]) {
-						ctx.ui.notify("Usage: /shortleash evaluate <path/to/pipeline.json|yaml|issue-id>", "error");
+						ctx.ui.notify("Usage: /shortleash evaluate <path/to/pipeline.json|issue-id>", "error");
 						return;
 					}
 					await handleEvaluate(parts[1], ctx, pi, parts.includes("--json"));
@@ -140,7 +138,7 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 				}
 				case "reconcile": {
 					if (!parts[1]) {
-						ctx.ui.notify("Usage: /shortleash reconcile <path/to/pipeline.json|yaml|issue-id>", "error");
+						ctx.ui.notify("Usage: /shortleash reconcile <path/to/pipeline.json|issue-id>", "error");
 						return;
 					}
 					await handleReconcile(parts[1], ctx, pi, parts.includes("--json"));
@@ -150,11 +148,11 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify(
 						[
 							"Shortleash — multi-agent pipeline orchestrator",
-							"  /shortleash run <path.json|yaml|issue-id> [--resume|--restart]  Run a pipeline",
-							"  /shortleash plan <path.json|yaml|issue-id>                       Validate and inspect a pipeline",
+							"  /shortleash run <path.json|issue-id> [--resume|--restart]  Run a pipeline",
+							"  /shortleash plan <path.json|issue-id>                       Validate and inspect a pipeline",
 							"  /shortleash status <name> [--json]                             Show persisted status",
-							"  /shortleash evaluate <path.json|yaml|issue-id> [--json]        Run persisted policy evaluators",
-							"  /shortleash reconcile <path.json|yaml|issue-id> [--json]       Detect Beads projection drift",
+							"  /shortleash evaluate <path.json|issue-id> [--json]        Run persisted policy evaluators",
+							"  /shortleash reconcile <path.json|issue-id> [--json]       Detect Beads projection drift",
 							"  Dashboard: Esc closes it; c cancels the active run",
 						].join("\n"),
 						"info",
@@ -202,9 +200,9 @@ function createShortleashArgumentCompletions(pi: ExtensionAPI): AsyncShortleashA
 		pending = runBeads(["list", "--status", "open"])
 			.then(result =>
 				extractBeadsIssueRecords(result.data).flatMap(issue => {
-					if (issue.status !== "open" || !hasSwarmMetadata(issue.metadata)) return [];
+					if (issue.status !== "open" || !hasShortleashMetadata(issue.metadata)) return [];
 					try {
-						const definition = validateSwarmMetadata(issue.metadata);
+						const definition = validateShortleashMetadata(issue.metadata);
 						return [
 							{
 								id: issue.id,
@@ -271,14 +269,14 @@ function createShortleashArgumentCompletions(pi: ExtensionAPI): AsyncShortleashA
 
 const MAX_DIRECT_FINALIZE_ATTEMPTS = 3;
 
-async function startDirectSwarm(
-	plan: SwarmPlan,
+async function startDirectShortleash(
+	plan: ShortleashPlan,
 	ctx: ExtensionContext,
 	pi: ExtensionAPI,
-	runOptions: SwarmRunOptions,
-	directRuns: Map<string, DirectSwarmRun>,
+	runOptions: ShortleashRunOptions,
+	directRuns: Map<string, DirectShortleashRun>,
 ): Promise<void> {
-	const { definition, workspace, definitionPath, pluginPaths, policyRegistry } = plan;
+	const { definition, workspace, definitionPath, policyPaths, policyRegistry } = plan;
 	const sessionId = ctx.sessionManager.getSessionId();
 	if (directRuns.has(sessionId)) {
 		throw new Error(`Shortleash '${definition.name}' already has a direct run in this OMP session.`);
@@ -286,12 +284,12 @@ async function startDirectSwarm(
 
 	await fs.mkdir(workspace, { recursive: true });
 	const stateTracker = new StateTracker(workspace, definition.name);
-	const definitionHash = fingerprintSwarmDefinition(definition);
-	const manifest = await createSwarmRunManifest(definition, {
+	const definitionHash = fingerprintShortleashDefinition(definition);
+	const manifest = await createShortleashRunManifest(definition, {
 		definitionPath,
 		definitionHash,
 		workspace,
-		pluginPaths,
+		policyPaths,
 		cwd: ctx.cwd,
 	});
 	try {
@@ -299,7 +297,7 @@ async function startDirectSwarm(
 			{ definitionHash, workspace },
 			{ allowStaleRecovery: runOptions.resume || runOptions.restart },
 		);
-		await stateTracker.init([], definition.targetCount, definition.mode, {
+		await stateTracker.init([], {
 			definitionHash,
 			workspace,
 			definitionPath,
@@ -312,14 +310,14 @@ async function startDirectSwarm(
 		throw error;
 	}
 
-	const run: DirectSwarmRun = {
+	const run: DirectShortleashRun = {
 		sessionId,
 		definition,
 		workspace,
 		cwd: ctx.cwd,
 		stateTracker,
 		policyRegistry,
-		beadsProjector: plan.source.beadId ? createSwarmBeadsProjector(plan.source.beadId, ctx.cwd) : undefined,
+		beadsProjector: plan.source.beadId ? createShortleashBeadsProjector(plan.source.beadId, ctx.cwd) : undefined,
 		attempt: nextDirectAttempt(stateTracker.state),
 		before: new Map(),
 		processing: false,
@@ -328,15 +326,15 @@ async function startDirectSwarm(
 	try {
 		await projectDirectRun(run, {
 			type: "started",
-			swarmName: definition.name,
+			shortleashName: definition.name,
 			status: "running",
 			detail: runOptions.resume ? "resumed in current OMP session" : "started in current OMP session",
 		});
 		const history = directHistory(stateTracker.state);
 		const latestResults = new Map<string, SingleResult>();
 		run.before = await captureDirectPolicies(run, "before", latestResults, history);
-		await stateTracker.recordPolicyObservations("current", 0, run.attempt, "before", run.before);
-		executeDirectSwarm(definition, {
+		await stateTracker.recordPolicyObservations("current", run.attempt, "before", run.before);
+		executeDirectShortleash(definition, {
 			sendUserMessage: content => pi.sendUserMessage(content),
 		});
 		ctx.ui.notify(`Starting shortleash '${definition.name}' directly in the current OMP session.`, "info");
@@ -348,22 +346,21 @@ async function startDirectSwarm(
 	}
 }
 
-async function finalizeDirectSwarm(
-	run: DirectSwarmRun,
+async function finalizeDirectShortleash(
+	run: DirectShortleashRun,
 	messages: AgentMessage[],
 	ctx: ExtensionContext,
 	pi: ExtensionAPI,
-	directRuns: Map<string, DirectSwarmRun>,
+	directRuns: Map<string, DirectShortleashRun>,
 ): Promise<void> {
 	const result = directResult(run, messages);
-	const iteration = 0;
 	const attempt = run.attempt;
-	await run.stateTracker.recordResult("current", iteration, attempt, result);
+	await run.stateTracker.recordResult("current", attempt, result);
 	const latestResults = new Map<string, SingleResult>([["current", result]]);
 	const history = directHistory(run.stateTracker.state);
 	const after = await captureDirectPolicies(run, "after", latestResults, history);
-	await run.stateTracker.recordPolicyObservations("current", iteration, attempt, "after", after);
-	const observations: SwarmPolicyObservations = new Map(
+	await run.stateTracker.recordPolicyObservations("current", attempt, "after", after);
+	const observations: ShortleashPolicyObservations = new Map(
 		[...new Set([...run.before.keys(), ...after.keys()])].map(key => [
 			key,
 			{ before: run.before.get(key), after: after.get(key) },
@@ -382,19 +379,17 @@ async function finalizeDirectSwarm(
 		observations,
 	);
 	const decision = combineDirectDecisions(agentDecision, completeDecision);
-	await run.stateTracker.updatePolicy(decision, { iteration, agent: "current" });
+	await run.stateTracker.updatePolicy(decision, { agent: "current" });
 
 	if (decision.accepted) {
 		directRuns.delete(run.sessionId);
 		await run.stateTracker.updatePipeline({
 			status: "completed",
-			nextIteration: run.definition.targetCount,
-			iteration,
 			completedAt: Date.now(),
 		});
 		await projectDirectRun(run, {
 			type: "completed",
-			swarmName: run.definition.name,
+			shortleashName: run.definition.name,
 			status: "completed",
 			detail: "direct current-session execution accepted",
 		});
@@ -408,7 +403,7 @@ async function finalizeDirectSwarm(
 		await run.stateTracker.updatePipeline({ status: "failed", completedAt: Date.now() });
 		await projectDirectRun(run, {
 			type: "blocked",
-			swarmName: run.definition.name,
+			shortleashName: run.definition.name,
 			status: "failed",
 			detail: `direct policy rejected after ${attempt} corrective attempts`,
 		});
@@ -422,12 +417,12 @@ async function finalizeDirectSwarm(
 
 	run.attempt = attempt + 1;
 	run.before = await captureDirectPolicies(run, "before", latestResults, history);
-	await run.stateTracker.recordPolicyObservations("current", iteration, run.attempt, "before", run.before);
+	await run.stateTracker.recordPolicyObservations("current", run.attempt, "before", run.before);
 	pi.sendUserMessage(formatDirectPolicyFeedback(decision), { deliverAs: "followUp" });
 }
 
 async function captureDirectPolicies(
-	run: DirectSwarmRun,
+	run: DirectShortleashRun,
 	phase: "before" | "after",
 	latestResults: ReadonlyMap<string, SingleResult>,
 	history: ReadonlyMap<string, readonly SingleResult[]>,
@@ -444,19 +439,18 @@ async function captureDirectPolicies(
 }
 
 function directPolicyContext(
-	run: DirectSwarmRun,
+	run: DirectShortleashRun,
 	boundary: "agent" | "complete",
 	latestResults: ReadonlyMap<string, SingleResult>,
 	history: ReadonlyMap<string, readonly SingleResult[]>,
 	agent?: string,
-): SwarmPolicyContext {
-	const context: SwarmPolicyContext = {
+): ShortleashPolicyContext {
+	const context: ShortleashPolicyContext = {
 		definition: run.definition,
 		cwd: run.cwd,
 		workspace: run.workspace,
-		swarmDir: run.stateTracker.swarmDir,
+		shortleashDir: run.stateTracker.shortleashDir,
 		boundary,
-		iteration: 0,
 		attempt: run.attempt,
 		params: {},
 		latestResults,
@@ -479,7 +473,7 @@ function nextDirectAttempt(state: Readonly<{ results: Record<string, { attempt: 
 	return Math.max(-1, ...(state.results.current ?? []).map(record => record.attempt)) + 1;
 }
 
-async function projectDirectRun(run: DirectSwarmRun, event: SwarmProjectionEvent): Promise<void> {
+async function projectDirectRun(run: DirectShortleashRun, event: ShortleashProjectionEvent): Promise<void> {
 	if (!run.beadsProjector) return;
 	try {
 		await run.beadsProjector.project(event);
@@ -497,7 +491,10 @@ async function projectDirectRun(run: DirectSwarmRun, event: SwarmProjectionEvent
 	}
 }
 
-function combineDirectDecisions(agent: SwarmPolicyDecision, complete: SwarmPolicyDecision): SwarmPolicyDecision {
+function combineDirectDecisions(
+	agent: ShortleashPolicyDecision,
+	complete: ShortleashPolicyDecision,
+): ShortleashPolicyDecision {
 	const hasCompletePolicies = complete.failures.length > 0 || complete.evaluations.length > 0;
 	return {
 		boundary: hasCompletePolicies ? "complete" : agent.boundary,
@@ -507,7 +504,7 @@ function combineDirectDecisions(agent: SwarmPolicyDecision, complete: SwarmPolic
 	};
 }
 
-function directResult(run: DirectSwarmRun, messages: AgentMessage[]): SingleResult {
+function directResult(run: DirectShortleashRun, messages: AgentMessage[]): SingleResult {
 	const assistant = [...messages].reverse().find(message => message.role === "assistant");
 	return {
 		index: 0,
@@ -538,7 +535,7 @@ function agentMessageText(message: AgentMessage): string {
 		.join("\n");
 }
 
-function formatDirectPolicyFeedback(decision: SwarmPolicyDecision): string {
+function formatDirectPolicyFeedback(decision: ShortleashPolicyDecision): string {
 	const failures = decision.failures.map(failure => `- ${failure.source} ${failure.id}: ${failure.message}`);
 	return [
 		"The Shortleash runtime rejected the current-session finalization.",
@@ -551,12 +548,12 @@ function formatDirectPolicyFeedback(decision: SwarmPolicyDecision): string {
 // /shortleash run
 // ============================================================================
 
-interface SwarmRunOptions {
+interface ShortleashRunOptions {
 	resume: boolean;
 	restart: boolean;
 }
 
-function parseRunOptions(args: string[]): SwarmRunOptions {
+function parseRunOptions(args: string[]): ShortleashRunOptions {
 	const resume = args.includes("--resume");
 	const restart = args.includes("--restart");
 	if (resume && restart) throw new Error("--resume and --restart cannot be used together.");
@@ -569,12 +566,12 @@ async function handleRun(
 	input: string,
 	ctx: ExtensionCommandContext,
 	pi: ExtensionAPI,
-	runOptions: SwarmRunOptions,
-	directRuns: Map<string, DirectSwarmRun>,
+	runOptions: ShortleashRunOptions,
+	directRuns: Map<string, DirectShortleashRun>,
 ): Promise<void> {
-	let plan: SwarmPlan;
+	let plan: ShortleashPlan;
 	try {
-		plan = await resolveSwarmPlan(input, ctx.cwd, { logger: pi.logger });
+		plan = await resolveShortleashPlan(input, ctx.cwd);
 	} catch (err) {
 		ctx.ui.notify(
 			`Cannot prepare shortleash '${input}': ${err instanceof Error ? err.message : String(err)}`,
@@ -582,10 +579,10 @@ async function handleRun(
 		);
 		return;
 	}
-	const { definition: def, workspace, waves, definitionPath, pluginPaths, policyRegistry } = plan;
+	const { definition: def, workspace, waves, definitionPath, policyPaths, policyRegistry } = plan;
 	if (def.agents.size === 0) {
 		try {
-			await startDirectSwarm(plan, ctx, pi, runOptions, directRuns);
+			await startDirectShortleash(plan, ctx, pi, runOptions, directRuns);
 		} catch (error) {
 			ctx.ui.notify(
 				`Cannot start direct shortleash '${def.name}': ${error instanceof Error ? error.message : String(error)}`,
@@ -595,14 +592,14 @@ async function handleRun(
 		return;
 	}
 	await fs.mkdir(workspace, { recursive: true });
-	const beadsProjector = plan.source.beadId ? createSwarmBeadsProjector(plan.source.beadId, ctx.cwd) : undefined;
+	const beadsProjector = plan.source.beadId ? createShortleashBeadsProjector(plan.source.beadId, ctx.cwd) : undefined;
 	const stateTracker = new StateTracker(workspace, def.name);
-	const definitionHash = fingerprintSwarmDefinition(def);
-	const manifest = await createSwarmRunManifest(def, {
+	const definitionHash = fingerprintShortleashDefinition(def);
+	const manifest = await createShortleashRunManifest(def, {
 		definitionPath,
 		definitionHash,
 		workspace,
-		pluginPaths,
+		policyPaths,
 		cwd: ctx.cwd,
 	});
 	try {
@@ -610,7 +607,7 @@ async function handleRun(
 			{ definitionHash, workspace },
 			{ allowStaleRecovery: runOptions.resume || runOptions.restart },
 		);
-		await stateTracker.init([...def.agents.keys()], def.targetCount, def.mode, {
+		await stateTracker.init([...def.agents.keys()], {
 			definitionHash,
 			workspace,
 			definitionPath,
@@ -632,41 +629,26 @@ async function handleRun(
 	const waveDesc = waves.map((w, i) => `wave ${i + 1}: [${w.join(", ")}]`).join("; ");
 	pi.logger.debug("Shortleash starting", {
 		name: def.name,
-		mode: def.mode,
 		agents: agentList,
 		waves: waveDesc,
 		workspace,
 	});
 
-	ctx.ui.notify(
-		`Starting shortleash '${def.name}': ${def.agents.size} agents, ${waves.length} waves, ${def.targetCount} iteration(s)`,
-		"info",
-	);
+	ctx.ui.notify(`Starting shortleash '${def.name}': ${def.agents.size} agents, ${waves.length} waves`, "info");
 
 	// 8. Attach the compact below-editor widget and the interactive dashboard.
 	const runAbortController = new AbortController();
-	const dashboard = attachSwarmDashboard(ctx, def, stateTracker, () => {
+	const dashboard = attachShortleashDashboard(ctx, def, stateTracker, () => {
 		runAbortController.abort(new Error("Cancelled from the Shortleash dashboard."));
 	});
 
-	// 9. Run declared agents through configured backend; Herdr falls back in-process when unavailable.
+	// 9. Run declared agents through the host's in-process worker executor.
 	const controller = new PipelineController(def, waves, stateTracker);
 	let result: PipelineResult;
-	let herdrSession: Awaited<ReturnType<typeof createHerdrSwarmSession>>;
 	const parentMessages = ctx.sessionManager
 		.getBranch()
 		.flatMap(entry => (entry.type === "message" ? [entry.message] : []));
 	try {
-		herdrSession =
-			def.agentExecution === "herdr"
-				? await createHerdrSwarmSession({
-						definition: def,
-						definitionInput: definitionPath,
-						workspace,
-						cwd: ctx.cwd,
-						logger: pi.logger,
-					})
-				: undefined;
 		result = await controller.run({
 			workspace,
 			cwd: ctx.cwd,
@@ -678,11 +660,9 @@ async function handleRun(
 			parentMessages,
 			policyRegistry,
 			beadsProjector,
-			agentRunner: herdrSession?.runAgent,
 		});
 	} finally {
 		await dashboard.dispose();
-		await herdrSession?.dispose();
 		await stateTracker.releaseRunLock();
 	}
 	const elapsed = stateTracker.state.completedAt
@@ -691,7 +671,7 @@ async function handleRun(
 
 	const summaryParts = [
 		`Shortleash '${def.name}' ${result.status}`,
-		`${result.iterations}/${def.targetCount} iterations`,
+		`${result.agentResults.size}/${def.agents.size} agents`,
 		`elapsed: ${elapsed}`,
 	];
 
@@ -711,13 +691,13 @@ async function handleRun(
 	const summaryMessage = buildSummaryMessage(def, result, stateTracker, workspace);
 	pi.sendMessage(
 		{
-			customType: "swarm-result",
+			customType: "shortleash-result",
 			content: [{ type: "text", text: summaryMessage }],
 			display: true,
 			details: {
-				swarmName: def.name,
+				shortleashName: def.name,
 				status: result.status,
-				iterations: result.iterations,
+				agentCount: result.agentResults.size,
 				errorCount: result.errors.length,
 			},
 		},
@@ -729,10 +709,10 @@ async function handleRun(
 // /shortleash plan, status, evaluate, and reconcile
 // ============================================================================
 
-async function handlePlan(input: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
+async function handlePlan(input: string, ctx: ExtensionCommandContext, _pi: ExtensionAPI): Promise<void> {
 	try {
-		const plan = await resolveSwarmPlan(input, ctx.cwd, { logger: pi.logger });
-		ctx.ui.notify(formatSwarmPlan(plan).join("\n"), "info");
+		const plan = await resolveShortleashPlan(input, ctx.cwd);
+		ctx.ui.notify(formatShortleashPlan(plan).join("\n"), "info");
 	} catch (err) {
 		ctx.ui.notify(
 			`Cannot inspect shortleash '${input}': ${err instanceof Error ? err.message : String(err)}`,
@@ -743,7 +723,10 @@ async function handlePlan(input: string, ctx: ExtensionCommandContext, pi: Exten
 
 async function handleStatus(name: string | undefined, ctx: ExtensionCommandContext, json: boolean): Promise<void> {
 	if (!name) {
-		ctx.ui.notify("Usage: /shortleash status <name>  (reads .swarm_<name>/state/pipeline.json from cwd)", "info");
+		ctx.ui.notify(
+			"Usage: /shortleash status <name>  (reads .shortleash_<name>/state/pipeline.json from cwd)",
+			"info",
+		);
 		return;
 	}
 
@@ -754,7 +737,7 @@ async function handleStatus(name: string | undefined, ctx: ExtensionCommandConte
 			ctx.ui.notify(`No state found for shortleash '${name}' in ${ctx.cwd}`, "error");
 			return;
 		}
-		ctx.ui.notify(json ? JSON.stringify(state, null, 2) : renderSwarmProgress(state).join("\n"), "info");
+		ctx.ui.notify(json ? JSON.stringify(state, null, 2) : renderShortleashProgress(state).join("\n"), "info");
 	} catch (err) {
 		ctx.ui.notify(
 			`Cannot read shortleash state '${name}': ${err instanceof Error ? err.message : String(err)}`,
@@ -766,12 +749,12 @@ async function handleStatus(name: string | undefined, ctx: ExtensionCommandConte
 async function handleEvaluate(
 	input: string,
 	ctx: ExtensionCommandContext,
-	pi: ExtensionAPI,
+	_pi: ExtensionAPI,
 	json: boolean,
 ): Promise<void> {
 	try {
-		const plan = await resolveSwarmPlan(input, ctx.cwd, { logger: pi.logger });
-		const definitionHash = fingerprintSwarmDefinition(plan.definition);
+		const plan = await resolveShortleashPlan(input, ctx.cwd);
+		const definitionHash = fingerprintShortleashDefinition(plan.definition);
 		const stateTracker = new StateTracker(plan.workspace, plan.definition.name);
 		await stateTracker.acquireRunLock({ definitionHash, workspace: plan.workspace });
 		try {
@@ -789,20 +772,18 @@ async function handleEvaluate(
 				const latest = results.at(-1);
 				if (latest) latestResults.set(agentName, latest);
 			}
-			const iteration = Math.max(0, state.nextIteration - 1);
 			const decision = await plan.policyRegistry.evaluate(plan.definition, {
 				definition: plan.definition,
 				cwd: ctx.cwd,
 				workspace: plan.workspace,
-				swarmDir: stateTracker.swarmDir,
+				shortleashDir: stateTracker.shortleashDir,
 				boundary: "complete",
-				iteration,
 				params: {},
 				latestResults,
 				history,
 				state,
 			});
-			await stateTracker.updatePolicy(decision, { iteration });
+			await stateTracker.updatePolicy(decision);
 			const message = json
 				? JSON.stringify(decision, null, 2)
 				: [
@@ -828,16 +809,16 @@ async function handleEvaluate(
 async function handleReconcile(
 	input: string,
 	ctx: ExtensionCommandContext,
-	pi: ExtensionAPI,
+	_pi: ExtensionAPI,
 	json: boolean,
 ): Promise<void> {
 	try {
-		const plan = await resolveSwarmPlan(input, ctx.cwd, { logger: pi.logger });
+		const plan = await resolveShortleashPlan(input, ctx.cwd);
 		if (!plan.source.beadId) {
 			ctx.ui.notify("Reconciliation requires a Beads issue ID or issue:// reference.", "error");
 			return;
 		}
-		const definitionHash = fingerprintSwarmDefinition(plan.definition);
+		const definitionHash = fingerprintShortleashDefinition(plan.definition);
 		const stateTracker = new StateTracker(plan.workspace, plan.definition.name);
 		const state = await stateTracker.load();
 		if (!state) {
@@ -845,7 +826,7 @@ async function handleReconcile(
 			return;
 		}
 		assertDefinitionHash(state.definitionHash, definitionHash, plan.definition.name);
-		const reconciliation = await createSwarmBeadsProjector(plan.source.beadId, ctx.cwd).reconcile(state.status);
+		const reconciliation = await createShortleashBeadsProjector(plan.source.beadId, ctx.cwd).reconcile(state.status);
 		const message = json
 			? JSON.stringify(reconciliation, null, 2)
 			: [
@@ -878,8 +859,8 @@ function assertDefinitionHash(actual: string, expected: string, name: string): v
 }
 
 function buildSummaryMessage(
-	def: SwarmDefinition,
-	result: Pick<PipelineResult, "status" | "iterations" | "errors">,
+	def: ShortleashDefinition,
+	result: Pick<PipelineResult, "status" | "agentResults" | "errors">,
 	stateTracker: StateTracker,
 	workspace: string,
 ): string {
@@ -887,10 +868,9 @@ function buildSummaryMessage(
 	lines.push(`## Shortleash Pipeline: ${def.name}`);
 	lines.push("");
 	lines.push(`- **Status**: ${result.status}`);
-	lines.push(`- **Mode**: ${def.mode}`);
-	lines.push(`- **Iterations**: ${result.iterations}/${def.targetCount}`);
+	lines.push(`- **Agents completed**: ${result.agentResults.size}/${def.agents.size}`);
 	lines.push(`- **Workspace**: ${workspace}`);
-	lines.push(`- **State dir**: ${stateTracker.swarmDir}`);
+	lines.push(`- **State dir**: ${stateTracker.shortleashDir}`);
 	lines.push("");
 
 	lines.push("### Agent Results");

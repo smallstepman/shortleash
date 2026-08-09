@@ -1,17 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import {
-	hasSwarmMetadata,
-	SWARM_DEFINITION_JSON_SCHEMA,
-	SWARM_METADATA_JSON_SCHEMA,
-	validateSwarmMetadata,
+	hasShortleashMetadata,
+	SHORTLEASH_DEFINITION_JSON_SCHEMA,
+	SHORTLEASH_METADATA_JSON_SCHEMA,
+	validateShortleashMetadata,
 } from "../../../src/orchestration/definition/metadata";
 
 const validMetadata = {
 	shortleash: {
 		name: "metadata-schema",
 		workspace: ".",
-		mode: "pipeline",
-		agent_execution: "subagents",
 		agents: {
 			discover: {
 				role: "investigator",
@@ -30,43 +28,41 @@ const validMetadata = {
 
 describe("Beads Shortleash metadata schema", () => {
 	it("exposes a strict spawn-definition schema while preserving unrelated metadata", () => {
-		expect(SWARM_DEFINITION_JSON_SCHEMA.required).toEqual(["name", "workspace"]);
-		expect(SWARM_DEFINITION_JSON_SCHEMA.properties.agent_execution.enum).toEqual(["herdr", "subagents"]);
-		expect(SWARM_DEFINITION_JSON_SCHEMA.additionalProperties).toBe(false);
-		expect(SWARM_METADATA_JSON_SCHEMA.additionalProperties).toBe(true);
-		expect(SWARM_METADATA_JSON_SCHEMA.properties.shortleash).toBe(SWARM_DEFINITION_JSON_SCHEMA);
+		expect(SHORTLEASH_DEFINITION_JSON_SCHEMA.required).toEqual(["name", "workspace"]);
+		expect(SHORTLEASH_DEFINITION_JSON_SCHEMA.additionalProperties).toBe(false);
+		expect(SHORTLEASH_METADATA_JSON_SCHEMA.additionalProperties).toBe(true);
+		expect(SHORTLEASH_METADATA_JSON_SCHEMA.properties.shortleash).toBe(SHORTLEASH_DEFINITION_JSON_SCHEMA);
 	});
 
 	it("validates the standard metadata.shortleash shape and ignores sibling metadata", () => {
-		const definition = validateSwarmMetadata(validMetadata);
+		const definition = validateShortleashMetadata(validMetadata);
 		expect(definition.name).toBe("metadata-schema");
-		expect(definition.agentExecution).toBe("subagents");
 		expect([...definition.agents.keys()]).toEqual(["discover", "implement"]);
-		expect(hasSwarmMetadata(JSON.stringify(validMetadata))).toBe(true);
+		expect(hasShortleashMetadata(JSON.stringify(validMetadata))).toBe(true);
 	});
 
 	it("accepts direct current-session metadata without agents", () => {
-		const definition = validateSwarmMetadata({
+		const definition = validateShortleashMetadata({
 			shortleash: {
 				name: "direct-metadata",
 				workspace: ".",
 				task: "Continue the current objective.",
-				checks: ["fixture:architecture", "fixture:evidence"],
-				evals: ["fixture:review"],
+				checks: ["./checks/architecture.ts", "./checks/evidence.ts"],
+				evals: ["./checks/review.ts"],
 			},
 		});
 
 		expect(definition.agents.size).toBe(0);
 		expect(definition.task).toBe("Continue the current objective.");
-		expect(definition.checks).toEqual(["fixture:architecture", "fixture:evidence"]);
+		expect(definition.checks).toEqual(["./checks/architecture.ts", "./checks/evidence.ts"]);
 	});
 
 	it("rejects unknown fields and invalid dependency references before bd is invoked", () => {
-		expect(() => validateSwarmMetadata({ shortleash: { ...validMetadata.shortleash, unexpected: true } })).toThrow(
-			"unexpected is not allowed",
-		);
 		expect(() =>
-			validateSwarmMetadata({
+			validateShortleashMetadata({ shortleash: { ...validMetadata.shortleash, unexpected: true } }),
+		).toThrow("unexpected is not allowed");
+		expect(() =>
+			validateShortleashMetadata({
 				shortleash: {
 					...validMetadata.shortleash,
 					agents: { worker: { role: "engineer", task: "work", waits_for: ["missing"] } },
@@ -77,7 +73,7 @@ describe("Beads Shortleash metadata schema", () => {
 
 	it("rejects dependency cycles", () => {
 		expect(() =>
-			validateSwarmMetadata({
+			validateShortleashMetadata({
 				shortleash: {
 					...validMetadata.shortleash,
 					agents: {

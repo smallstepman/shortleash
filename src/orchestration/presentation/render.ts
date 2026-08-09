@@ -1,10 +1,10 @@
 /**
- * TUI progress rendering for swarm pipeline status.
+ * TUI progress rendering for Shortleash pipeline status.
  */
 import { truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, truncate } from "@oh-my-pi/pi-utils";
-import type { SwarmDefinition } from "../definition/schema";
-import type { AgentState, SwarmState } from "../execution/state";
+import type { ShortleashDefinition } from "../definition/schema";
+import type { AgentState, ShortleashState } from "../execution/state";
 import { renderExecutionGraph } from "./graph";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -17,12 +17,12 @@ const STATUS_LABELS: Record<string, string> = {
 	aborted: "[stop]",
 };
 
-export function renderSwarmProgress(state: SwarmState): string[] {
+export function renderShortleashProgress(state: ShortleashState): string[] {
 	const lines: string[] = [];
 
 	const statusLabel = state.status.toUpperCase();
-	lines.push(`Swarm: ${state.name} [${statusLabel}]`);
-	lines.push(`Mode: ${state.mode} | Iteration: ${state.iteration + 1}/${state.targetCount}`);
+	lines.push(`Shortleash: ${state.name} [${statusLabel}]`);
+	lines.push(`Wave: ${state.currentWave + 1}`);
 	lines.push("");
 
 	const agents: AgentState[] = Object.values(state.agents);
@@ -72,10 +72,10 @@ function formatAgentDuration(agent: { startedAt?: number; completedAt?: number; 
 	return "";
 }
 
-export function renderSwarmWidgetLine(
-	definition: SwarmDefinition,
-	state: SwarmState,
-	theme: SwarmDashboardTheme,
+export function renderShortleashWidgetLine(
+	definition: ShortleashDefinition,
+	state: ShortleashState,
+	theme: ShortleashDashboardTheme,
 ): string {
 	const agents = Object.values(state.agents);
 	const completed = agents.filter(agent => agent.status === "completed").length;
@@ -83,7 +83,7 @@ export function renderSwarmWidgetLine(
 	const failed = agents.filter(agent => agent.status === "failed").length;
 	const status = styleStatus(state.status, theme);
 	const parts = [
-		theme.fg("accent", `swarm:${definition.name}`),
+		theme.fg("accent", `shortleash:${definition.name}`),
 		status,
 		theme.fg("muted", ` ${completed}/${agents.length}`),
 	];
@@ -94,10 +94,10 @@ export function renderSwarmWidgetLine(
 }
 
 /** Minimal styling seam so dashboard rendering is testable without a live TUI. */
-export interface SwarmDashboardTheme {
+export interface ShortleashDashboardTheme {
 	fg(color: string, text: string): string;
 }
-export interface SwarmDashboardRenderOptions {
+export interface ShortleashDashboardRenderOptions {
 	/** Include the interactive Alt+W cancellation shortcut in the footer. */
 	cancelShortcut?: boolean;
 }
@@ -105,16 +105,16 @@ export interface SwarmDashboardRenderOptions {
  * Render the dashboard as a bordered panel. The caller can place this panel
  * anywhere an overlay supports; the graph itself is independent of placement.
  */
-export function renderSwarmDashboardPanelLines(
-	definition: SwarmDefinition,
-	state: SwarmState,
+export function renderShortleashDashboardPanelLines(
+	definition: ShortleashDefinition,
+	state: ShortleashState,
 	width: number,
-	theme: SwarmDashboardTheme,
+	theme: ShortleashDashboardTheme,
 	animationFrame = 0,
 ): string[] {
 	const panelWidth = Math.max(12, Math.floor(width));
 	const contentWidth = Math.max(8, panelWidth - 2);
-	const content = renderSwarmDashboardLines(definition, state, contentWidth, theme, animationFrame);
+	const content = renderShortleashDashboardLines(definition, state, contentWidth, theme, animationFrame);
 	const horizontal = "─".repeat(Math.max(0, panelWidth - 2));
 	const border = (text: string) => theme.fg("borderMuted", text);
 	return [
@@ -132,28 +132,20 @@ export function renderSwarmDashboardPanelLines(
  * Render a compact, layered execution graph followed by live agent details.
  * Nodes are laid out by dependency depth rather than printed as a flat list.
  */
-export function renderSwarmDashboardLines(
-	definition: SwarmDefinition,
-	state: SwarmState,
+export function renderShortleashDashboardLines(
+	definition: ShortleashDefinition,
+	state: ShortleashState,
 	width: number,
-	theme: SwarmDashboardTheme,
+	theme: ShortleashDashboardTheme,
 	animationFrame = 0,
-	options: SwarmDashboardRenderOptions = {},
+	options: ShortleashDashboardRenderOptions = {},
 ): string[] {
 	const lines: string[] = [];
 	const boundedWidth = Math.max(10, Math.floor(width));
-	const title = ` Swarm ${definition.name} `;
+	const title = ` Shortleash ${definition.name} `;
 	const status = styleStatus(state.status, theme);
 	lines.push(truncateToWidth(`${theme.fg("accent", title)} ${status}`, boundedWidth));
-	lines.push(
-		truncateToWidth(
-			theme.fg(
-				"dim",
-				` mode=${definition.mode} iteration=${Math.min(state.iteration + 1, state.targetCount)}/${state.targetCount}`,
-			),
-			boundedWidth,
-		),
-	);
+	lines.push(truncateToWidth(theme.fg("dim", ` wave=${state.currentWave + 1}`), boundedWidth));
 	lines.push(theme.fg("borderMuted", "─".repeat(Math.min(boundedWidth, 80))));
 	lines.push(theme.fg("accent", " Execution graph"));
 	lines.push(...renderExecutionGraph(definition, state, boundedWidth, theme, animationFrame));
@@ -200,7 +192,7 @@ export function renderSwarmDashboardLines(
 	return lines;
 }
 
-function styleStatus(status: string, theme: SwarmDashboardTheme): string {
+function styleStatus(status: string, theme: ShortleashDashboardTheme): string {
 	const color =
 		status === "completed"
 			? "success"

@@ -9,7 +9,7 @@ import {
 
 const workspace = "/tmp/shortleash-hooks-test";
 
-function validMetadata(name = "hook-swarm"): Record<string, unknown> {
+function validMetadata(name = "hook-shortleash"): Record<string, unknown> {
 	return {
 		shortleash: {
 			name,
@@ -188,7 +188,7 @@ describe("Beads bash hooks", () => {
 			onClaim: async (issueId, ctx) => {
 				claimedIssue = issueId;
 				claimedContext = ctx;
-				return { status: "completed", swarmName: "hook-swarm" };
+				return { status: "completed", shortleashName: "hook-shortleash" };
 			},
 		});
 		const ctx = context();

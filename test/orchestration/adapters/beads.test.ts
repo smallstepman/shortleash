@@ -3,20 +3,19 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-	createSwarmBeadsProjector,
-	resolveSwarmInput,
-	type SwarmBeadRecord,
-	swarmDefinitionFromBead,
+	createShortleashBeadsProjector,
+	resolveShortleashInput,
+	type ShortleashBeadRecord,
+	shortleashDefinitionFromBead,
 } from "../../../src/orchestration/adapters/beads";
 
-const bead: SwarmBeadRecord = {
+const bead: ShortleashBeadRecord = {
 	id: "obligated-gty",
 	title: "Implement streaming retry logic",
 	metadata: {
 		shortleash: {
 			name: "streaming-retry",
 			workspace: ".",
-			mode: "sequential",
 			agents: {
 				backend: {
 					role: "backend",
@@ -30,17 +29,16 @@ const bead: SwarmBeadRecord = {
 	},
 };
 
-describe("Beads-backed swarm input", () => {
-	it("reads the standard swarm definition from metadata.shortleash", () => {
-		const definition = swarmDefinitionFromBead(bead);
+describe("Beads-backed Shortleash input", () => {
+	it("reads the standard Shortleash definition from metadata.shortleash", () => {
+		const definition = shortleashDefinitionFromBead(bead);
 		expect(definition.name).toBe("streaming-retry");
-		expect(definition.mode).toBe("sequential");
 		expect([...definition.agents.keys()]).toEqual(["backend"]);
 	});
 
-	it("rejects metadata that does not use the swarm schema", () => {
+	it("rejects metadata that does not use the Shortleash schema", () => {
 		expect(() =>
-			swarmDefinitionFromBead({
+			shortleashDefinitionFromBead({
 				...bead,
 				metadata: { workflow: { phase: "implementation", agent: "backend" } },
 			}),
@@ -48,9 +46,9 @@ describe("Beads-backed swarm input", () => {
 	});
 
 	it("resolves both bare Beads IDs and issue:// references", async () => {
-		const reader = async (id: string): Promise<SwarmBeadRecord> => ({ ...bead, id });
-		const bare = await resolveSwarmInput("obligated-gty", process.cwd(), { readBead: reader });
-		const uri = await resolveSwarmInput("issue://obligated-gty", process.cwd(), { readBead: reader });
+		const reader = async (id: string): Promise<ShortleashBeadRecord> => ({ ...bead, id });
+		const bare = await resolveShortleashInput("obligated-gty", process.cwd(), { readBead: reader });
+		const uri = await resolveShortleashInput("issue://obligated-gty", process.cwd(), { readBead: reader });
 
 		expect(bare.beadId).toBe("obligated-gty");
 		expect(uri.beadId).toBe("obligated-gty");
@@ -59,7 +57,7 @@ describe("Beads-backed swarm input", () => {
 	});
 
 	it("keeps JSON file input working", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "swarm-input-test-"));
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "shortleash-input-test-"));
 		try {
 			const filePath = path.join(tempDir, "workflow.json");
 			await fs.writeFile(
@@ -73,7 +71,7 @@ describe("Beads-backed swarm input", () => {
 				}),
 			);
 
-			const resolved = await resolveSwarmInput(filePath, tempDir);
+			const resolved = await resolveShortleashInput(filePath, tempDir);
 			expect(resolved.beadId).toBeUndefined();
 			expect(resolved.definition.name).toBe("file-workflow");
 			expect(resolved.definitionDir).toBe(tempDir);
@@ -85,7 +83,7 @@ describe("Beads-backed swarm input", () => {
 	it("projects lifecycle notes idempotently and detects a closed-Bead drift", async () => {
 		const calls: string[][] = [];
 		let notes = "Existing note";
-		const projector = createSwarmBeadsProjector("obligated-gty", process.cwd(), {
+		const projector = createShortleashBeadsProjector("obligated-gty", process.cwd(), {
 			run: async args => {
 				calls.push(args);
 				if (args[0] === "show") {
@@ -100,7 +98,7 @@ describe("Beads-backed swarm input", () => {
 
 		const event = {
 			type: "started" as const,
-			swarmName: "streaming-retry",
+			shortleashName: "streaming-retry",
 			status: "running",
 		};
 		await projector.project(event);
@@ -112,12 +110,12 @@ describe("Beads-backed swarm input", () => {
 			"update",
 			"obligated-gty",
 			"--notes",
-			"Existing note\n[swarm:streaming-retry] started: running",
+			"Existing note\n[shortleash:streaming-retry] started: running",
 		]);
 	});
 
 	it("reports a missing projected Bead as drift", async () => {
-		const projector = createSwarmBeadsProjector("obligated-gty", process.cwd(), {
+		const projector = createShortleashBeadsProjector("obligated-gty", process.cwd(), {
 			run: async () => "[]",
 		});
 		const reconciliation = await projector.reconcile("running");

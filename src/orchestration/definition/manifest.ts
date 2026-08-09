@@ -1,20 +1,20 @@
 import { $ } from "bun";
 import packageJson from "../../../package.json" with { type: "json" };
-import type { SwarmRunManifest } from "../execution/state";
-import type { SwarmDefinition } from "./schema";
+import type { ShortleashRunManifest } from "../execution/state";
+import type { ShortleashDefinition } from "./schema";
 
-export interface SwarmManifestOptions {
+export interface ShortleashManifestOptions {
 	definitionPath?: string;
 	definitionHash: string;
 	workspace: string;
-	pluginPaths: string[];
+	policyPaths: string[];
 	cwd: string;
 }
 
-export async function createSwarmRunManifest(
-	definition: SwarmDefinition,
-	options: SwarmManifestOptions,
-): Promise<SwarmRunManifest> {
+export async function createShortleashRunManifest(
+	definition: ShortleashDefinition,
+	options: ShortleashManifestOptions,
+): Promise<ShortleashRunManifest> {
 	return {
 		definitionPath: options.definitionPath,
 		definitionHash: options.definitionHash,
@@ -25,7 +25,7 @@ export async function createSwarmRunManifest(
 		models: Object.fromEntries(
 			[...definition.agents].map(([name, agent]) => [name, agent.model ?? definition.model]),
 		),
-		pluginPaths: [...options.pluginPaths],
+		policyPaths: [...options.policyPaths],
 		environment: {
 			platform: process.platform,
 			arch: process.arch,

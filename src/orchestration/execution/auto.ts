@@ -1,17 +1,15 @@
 import * as fs from "node:fs/promises";
 import type { ExtensionContext, Settings } from "@oh-my-pi/pi-coding-agent";
-import { createSwarmBeadsProjector } from "../adapters/beads";
-import { createHerdrSwarmSession, type HerdrControl } from "../adapters/herdr";
-import { createSwarmRunManifest } from "../definition/manifest";
-import { resolveSwarmPlan, type SwarmPlan } from "../definition/plan";
-import { fingerprintSwarmDefinition } from "../definition/schema";
-import type { SwarmPluginLogger } from "../policy/plugins";
-import { attachSwarmDashboard } from "../presentation/dashboard";
+import { createShortleashBeadsProjector } from "../adapters/beads";
+import { createShortleashRunManifest } from "../definition/manifest";
+import { resolveShortleashPlan, type ShortleashPlan } from "../definition/plan";
+import { fingerprintShortleashDefinition } from "../definition/schema";
+import { attachShortleashDashboard } from "../presentation/dashboard";
 import { PipelineController } from "./pipeline";
 import type { PipelineStatus } from "./state";
 import { StateTracker } from "./state";
 
-export type ClaimedSwarmStatus =
+export type ClaimedShortleashStatus =
 	| "completed"
 	| "failed"
 	| "aborted"
@@ -19,35 +17,31 @@ export type ClaimedSwarmStatus =
 	| "already-completed"
 	| "not-started";
 
-export interface ClaimedSwarmResult {
-	status: ClaimedSwarmStatus;
-	swarmName?: string;
-	iterations?: number;
+export interface ClaimedShortleashResult {
+	status: ClaimedShortleashStatus;
+	shortleashName?: string;
 	errors?: string[];
 	reason?: string;
 }
 
-export interface ClaimedSwarmRunnerOptions {
+export interface ClaimedShortleashRunnerOptions {
 	ctx: ExtensionContext;
 	settings: Settings;
 	signal?: AbortSignal;
-	logger?: SwarmPluginLogger;
 	/** Intentionally execute again when persisted state already exists. */
 	restart?: boolean;
 	/** Current-session direct runner supplied by the OMP adapter. */
-	directRunner?: (plan: SwarmPlan, options: { restart: boolean }) => Promise<ClaimedSwarmResult>;
-	/** Optional control seam for deterministic host integration tests. */
-	herdrControl?: HerdrControl;
+	directRunner?: (plan: ShortleashPlan, options: { restart: boolean }) => Promise<ClaimedShortleashResult>;
 }
 
-/** Run the swarm definition attached to a claimed Bead, reusing persisted state unless restart is explicit. */
-export async function runClaimedSwarm(
+/** Run the Shortleash definition attached to a claimed Bead, reusing persisted state unless restart is explicit. */
+export async function runClaimedShortleash(
 	issueId: string,
-	options: ClaimedSwarmRunnerOptions,
-): Promise<ClaimedSwarmResult> {
-	const { ctx, settings, signal, logger } = options;
-	const plan = await resolveSwarmPlan(issueId, ctx.cwd, { logger });
-	const { definition, workspace, waves, definitionPath, pluginPaths, policyRegistry } = plan;
+	options: ClaimedShortleashRunnerOptions,
+): Promise<ClaimedShortleashResult> {
+	const { ctx, settings, signal } = options;
+	const plan = await resolveShortleashPlan(issueId, ctx.cwd);
+	const { definition, workspace, waves, definitionPath, policyPaths, policyRegistry } = plan;
 	const stateTracker = new StateTracker(workspace, definition.name);
 	const existing = await stateTracker.load();
 	if (existing && !options.restart) return existingRunResult(existing.status, definition.name);
@@ -59,12 +53,12 @@ export async function runClaimedSwarm(
 	}
 
 	await fs.mkdir(workspace, { recursive: true });
-	const definitionHash = fingerprintSwarmDefinition(definition);
-	const manifest = await createSwarmRunManifest(definition, {
+	const definitionHash = fingerprintShortleashDefinition(definition);
+	const manifest = await createShortleashRunManifest(definition, {
 		definitionPath,
 		definitionHash,
 		workspace,
-		pluginPaths,
+		policyPaths,
 		cwd: ctx.cwd,
 	});
 
@@ -73,7 +67,7 @@ export async function runClaimedSwarm(
 			{ definitionHash, workspace },
 			{ allowStaleRecovery: options.restart === true },
 		);
-		await stateTracker.init([...definition.agents.keys()], definition.targetCount, definition.mode, {
+		await stateTracker.init([...definition.agents.keys()], {
 			definitionHash,
 			workspace,
 			definitionPath,
@@ -85,7 +79,7 @@ export async function runClaimedSwarm(
 		if (isAlreadyRunningError(error)) {
 			return {
 				status: "already-running",
-				swarmName: definition.name,
+				shortleashName: definition.name,
 				reason: errorMessage(error),
 			};
 		}
@@ -101,24 +95,14 @@ export async function runClaimedSwarm(
 	};
 	if (signal?.aborted) abortFromParent();
 	else signal?.addEventListener("abort", abortFromParent, { once: true });
-	let dashboard: ReturnType<typeof attachSwarmDashboard> | undefined;
-	let herdrSession: Awaited<ReturnType<typeof createHerdrSwarmSession>>;
+	let dashboard: ReturnType<typeof attachShortleashDashboard> | undefined;
 	try {
-		dashboard = attachSwarmDashboard(ctx, definition, stateTracker, () => {
+		dashboard = attachShortleashDashboard(ctx, definition, stateTracker, () => {
 			runAbortController.abort(new Error("Cancelled from the Shortleash dashboard."));
 		});
-		herdrSession =
-			definition.agentExecution === "herdr"
-				? await createHerdrSwarmSession({
-						client: options.herdrControl,
-						definition,
-						definitionInput: definitionPath,
-						workspace,
-						cwd: ctx.cwd,
-						logger,
-					})
-				: undefined;
-		const beadsProjector = plan.source.beadId ? createSwarmBeadsProjector(plan.source.beadId, ctx.cwd) : undefined;
+		const beadsProjector = plan.source.beadId
+			? createShortleashBeadsProjector(plan.source.beadId, ctx.cwd)
+			: undefined;
 		const result = await new PipelineController(definition, waves, stateTracker).run({
 			workspace,
 			cwd: ctx.cwd,
@@ -129,30 +113,31 @@ export async function runClaimedSwarm(
 			parentMessages,
 			policyRegistry,
 			beadsProjector,
-			agentRunner: herdrSession?.runAgent,
 		});
 		return {
 			status: result.status,
-			swarmName: definition.name,
-			iterations: result.iterations,
+			shortleashName: definition.name,
 			errors: result.errors,
 		};
 	} finally {
 		signal?.removeEventListener("abort", abortFromParent);
 		await dashboard?.dispose();
-		await herdrSession?.dispose();
 		await stateTracker.releaseRunLock();
 	}
 }
 
-function existingRunResult(status: PipelineStatus, swarmName: string): ClaimedSwarmResult {
+function existingRunResult(status: PipelineStatus, shortleashName: string): ClaimedShortleashResult {
 	if (status === "running")
-		return { status: "already-running", swarmName, reason: "A persisted Shortleash run is already running." };
+		return { status: "already-running", shortleashName, reason: "A persisted Shortleash run is already running." };
 	if (status === "completed")
-		return { status: "already-completed", swarmName, reason: "The persisted Shortleash run is already completed." };
+		return {
+			status: "already-completed",
+			shortleashName,
+			reason: "The persisted Shortleash run is already completed.",
+		};
 	return {
 		status: "not-started",
-		swarmName,
+		shortleashName,
 		reason: `A persisted Shortleash run has status '${status}'; use an explicit /shortleash run --resume or --restart command.`,
 	};
 }

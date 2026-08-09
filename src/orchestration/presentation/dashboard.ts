@@ -1,23 +1,23 @@
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { Text as TextComponent } from "@oh-my-pi/pi-coding-agent";
 import { matchesKey, ScrollView, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import type { SwarmDefinition } from "../definition/schema";
+import type { ShortleashDefinition } from "../definition/schema";
 import type { StateTracker } from "../execution/state";
-import { renderSwarmDashboardLines, renderSwarmWidgetLine } from "./render";
+import { renderShortleashDashboardLines, renderShortleashWidgetLine } from "./render";
 
-export interface SwarmDashboardHandle {
+export interface ShortleashDashboardHandle {
 	update(): void;
 	dispose(): Promise<void>;
 }
 
-/** Attach the live widget and a centered fullscreen Alt+W dashboard to any active swarm execution. */
-export function attachSwarmDashboard(
+/** Attach the live widget and a centered fullscreen Alt+W dashboard to any active Shortleash execution. */
+export function attachShortleashDashboard(
 	ctx: ExtensionContext,
-	definition: SwarmDefinition,
+	definition: ShortleashDefinition,
 	stateTracker: StateTracker,
 	onCancel: () => void,
-): SwarmDashboardHandle {
-	const widgetKey = `swarm-${definition.name}`;
+): ShortleashDashboardHandle {
+	const widgetKey = `shortleash-${definition.name}`;
 	let dashboardPromise: Promise<void> | undefined;
 	let closeDashboard: (() => void) | undefined;
 	let overlayTui: { requestRender(): void } | undefined;
@@ -32,7 +32,7 @@ export function attachSwarmDashboard(
 		if (!ctx.hasUI || disposed) return;
 		ctx.ui.setWidget(
 			widgetKey,
-			(_tui, theme) => new TextComponent(renderSwarmWidgetLine(definition, stateTracker.state, theme), 0, 0),
+			(_tui, theme) => new TextComponent(renderShortleashWidgetLine(definition, stateTracker.state, theme), 0, 0),
 			{ placement: "belowEditor" },
 		);
 		requestRender();
@@ -68,7 +68,7 @@ export function attachSwarmDashboard(
 
 				const createViewport = (width: number) => {
 					const layout = getLayout(width);
-					const content = renderSwarmDashboardLines(
+					const content = renderShortleashDashboardLines(
 						definition,
 						stateTracker.state,
 						layout.contentWidth,
@@ -114,13 +114,13 @@ export function attachSwarmDashboard(
 					handleInput(data: string): void {
 						if (data === "x") {
 							onCancel();
-							ctx.ui.notify(`Cancellation requested for swarm '${definition.name}'.`, "warning");
+							ctx.ui.notify(`Cancellation requested for Shortleash '${definition.name}'.`, "warning");
 							done(undefined);
 							return;
 						}
 						if (data === "c" || matchesKey(data, "ctrl+c")) {
 							onCancel();
-							ctx.ui.notify(`Cancellation requested for swarm '${definition.name}'.`, "info");
+							ctx.ui.notify(`Cancellation requested for Shortleash '${definition.name}'.`, "info");
 							done(undefined);
 							return;
 						}

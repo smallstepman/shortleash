@@ -1,8 +1,8 @@
 // ============================================================================
-// Raw JSON/YAML shape (snake_case, optional fields)
+// Raw JSON shape (snake_case, optional fields)
 // ============================================================================
 
-interface RawSwarmAgentConfig {
+interface RawShortleashAgentConfig {
 	[key: string]: unknown;
 	role?: unknown;
 	task?: unknown;
@@ -13,7 +13,7 @@ interface RawSwarmAgentConfig {
 	/** Preferred key; `workspace_isolation` is accepted as an explicit alias. */
 	isolation?: unknown;
 	workspace_isolation?: unknown;
-	/** `true`/`false` or `"parent"`/`"none"`; aliases are accepted for CLI ergonomics. */
+	/** `true`/`false` or `"parent"`/`"none"`; aliases are accepted for configuration ergonomics. */
 	inherit_history?: unknown;
 	history?: unknown;
 	parent_history?: unknown;
@@ -21,27 +21,20 @@ interface RawSwarmAgentConfig {
 	evals?: unknown;
 }
 
-interface RawSwarmConfig {
+interface RawShortleashConfig {
 	[key: string]: unknown;
 	name?: unknown;
 	workspace?: unknown;
 	/** Prompt used when this definition is executed in the current OMP session. */
 	task?: unknown;
-	mode?: unknown;
-	agent_execution?: unknown;
-	target_count?: unknown;
 	failure_policy?: unknown;
-	max_concurrency?: unknown;
 	agent_timeout_ms?: unknown;
-	token_budget?: unknown;
-	request_budget?: unknown;
 	model?: unknown;
 	isolation?: unknown;
 	workspace_isolation?: unknown;
 	inherit_history?: unknown;
 	history?: unknown;
 	parent_history?: unknown;
-	plugins?: unknown;
 	checks?: unknown;
 	evals?: unknown;
 	agents?: unknown;
@@ -51,16 +44,11 @@ interface RawSwarmConfig {
 // Normalized types (camelCase, defaults applied)
 // ============================================================================
 
-export type SwarmMode = "pipeline" | "parallel" | "sequential";
+export type ShortleashFailurePolicy = "fail_fast" | "continue" | "skip_dependents";
 
-/** Selects the host used for declared Shortleash agents. */
-export type SwarmAgentExecution = "herdr" | "subagents";
+export type ShortleashIsolationMode = "none" | "worktree";
 
-export type SwarmFailurePolicy = "fail_fast" | "continue" | "skip_dependents";
-
-export type SwarmIsolationMode = "none" | "worktree";
-
-export interface SwarmAgent {
+export interface ShortleashAgent {
 	name: string;
 	role: string;
 	task: string;
@@ -69,37 +57,29 @@ export interface SwarmAgent {
 	waitsFor: readonly string[];
 	model?: string;
 	/** Overrides the global workspace isolation mode for this agent. */
-	workspaceIsolation?: SwarmIsolationMode;
+	workspaceIsolation?: ShortleashIsolationMode;
 	/** Overrides the global parent-history behavior for this agent. */
 	inheritHistory?: boolean;
-	checks: readonly SwarmPolicyRef[];
-	evals: readonly SwarmPolicyRef[];
+	checks: readonly ShortleashPolicyRef[];
+	evals: readonly ShortleashPolicyRef[];
 }
 
-export interface SwarmDefinition {
+export interface ShortleashDefinition {
 	name: string;
 	workspace: string;
 	/** Prompt used when no agents are declared and the current OMP session runs the definition. */
 	task?: string;
 	/** Default isolation applied to every agent without an override. */
-	workspaceIsolation: SwarmIsolationMode;
+	workspaceIsolation: ShortleashIsolationMode;
 	/** Whether workers inherit the parent chat history by default. */
 	inheritHistory: boolean;
-	/** Execution backend for declared agents; Herdr opens a visible tab by default. */
-	agentExecution: SwarmAgentExecution;
-	mode: SwarmMode;
-	targetCount: number;
-	failurePolicy: SwarmFailurePolicy;
-	maxConcurrency?: number;
+	failurePolicy: ShortleashFailurePolicy;
 	agentTimeoutMs?: number;
-	tokenBudget?: number;
-	requestBudget?: number;
 	model?: string;
-	agents: ReadonlyMap<string, SwarmAgent>;
-	plugins: readonly string[];
-	checks: readonly SwarmPolicyRef[];
-	evals: readonly SwarmPolicyRef[];
-	/** Preserves definition declaration order for implicit pipeline sequencing. */
+	agents: ReadonlyMap<string, ShortleashAgent>;
+	checks: readonly ShortleashPolicyRef[];
+	evals: readonly ShortleashPolicyRef[];
+	/** Preserves definition declaration order for stable presentation and serialization. */
 	agentOrder: readonly string[];
 }
 
@@ -107,30 +87,21 @@ export interface SwarmDefinition {
 // Parsing
 // ============================================================================
 
-const VALID_MODES = new Set<string>(["pipeline", "parallel", "sequential"]);
-const VALID_AGENT_EXECUTIONS = new Set<SwarmAgentExecution>(["herdr", "subagents"]);
-const VALID_FAILURE_POLICIES = new Set<SwarmFailurePolicy>(["fail_fast", "continue", "skip_dependents"]);
-const VALID_SWARM_NAME = /^[a-zA-Z0-9._-]+$/;
+const VALID_FAILURE_POLICIES = new Set<ShortleashFailurePolicy>(["fail_fast", "continue", "skip_dependents"]);
+const VALID_SHORTLEASH_NAME = /^[a-zA-Z0-9._-]+$/;
 const VALID_POLICY_PARAM_KEY = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-export const RAW_SWARM_KEYS: ReadonlySet<string> = new Set([
+export const RAW_SHORTLEASH_KEYS: ReadonlySet<string> = new Set([
 	"name",
 	"workspace",
 	"task",
-	"mode",
-	"target_count",
-	"agent_execution",
 	"failure_policy",
-	"max_concurrency",
 	"agent_timeout_ms",
-	"token_budget",
-	"request_budget",
 	"model",
 	"isolation",
 	"workspace_isolation",
 	"inherit_history",
 	"history",
 	"parent_history",
-	"plugins",
 	"checks",
 	"evals",
 	"agents",
@@ -150,7 +121,7 @@ export const RAW_AGENT_KEYS: ReadonlySet<string> = new Set([
 	"checks",
 	"evals",
 ]);
-const VALID_ISOLATION_MODES = new Set<SwarmIsolationMode>(["none", "worktree"]);
+const VALID_SHORTLEASH_ISOLATION_MODES = new Set<ShortleashIsolationMode>(["none", "worktree"]);
 function parsePositiveInteger(value: unknown, field: string): number | undefined {
 	if (value === undefined) return undefined;
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
@@ -159,33 +130,26 @@ function parsePositiveInteger(value: unknown, field: string): number | undefined
 	return value;
 }
 
-function parseFailurePolicy(value: unknown): SwarmFailurePolicy {
+function parseFailurePolicy(value: unknown): ShortleashFailurePolicy {
 	if (value === undefined) return "skip_dependents";
-	if (typeof value !== "string" || !VALID_FAILURE_POLICIES.has(value as SwarmFailurePolicy)) {
+	if (typeof value !== "string" || !VALID_FAILURE_POLICIES.has(value as ShortleashFailurePolicy)) {
 		throw new Error(
 			`Invalid failure_policy '${String(value)}'. Must be one of: ${[...VALID_FAILURE_POLICIES].join(", ")}`,
 		);
 	}
-	return value as SwarmFailurePolicy;
-}
-function parseAgentExecution(value: unknown): SwarmAgentExecution {
-	if (value === undefined) return "herdr";
-	if (typeof value !== "string" || !VALID_AGENT_EXECUTIONS.has(value as SwarmAgentExecution)) {
-		throw new Error(`Invalid agent_execution '${String(value)}'. Must be one of: herdr, subagents`);
-	}
-	return value as SwarmAgentExecution;
+	return value as ShortleashFailurePolicy;
 }
 
 function firstDefined(...values: unknown[]): unknown {
 	return values.find(value => value !== undefined);
 }
 
-function parseIsolationMode(value: unknown, field: string): SwarmIsolationMode | undefined {
+function parseIsolationMode(value: unknown, field: string): ShortleashIsolationMode | undefined {
 	if (value === undefined) return undefined;
-	if (typeof value !== "string" || !VALID_ISOLATION_MODES.has(value as SwarmIsolationMode)) {
+	if (typeof value !== "string" || !VALID_SHORTLEASH_ISOLATION_MODES.has(value as ShortleashIsolationMode)) {
 		throw new Error(`${field} must be one of: none, worktree`);
 	}
-	return value as SwarmIsolationMode;
+	return value as ShortleashIsolationMode;
 }
 
 function parseHistoryInheritance(value: unknown, field: string): boolean | undefined {
@@ -198,15 +162,13 @@ function parseHistoryInheritance(value: unknown, field: string): boolean | undef
 	throw new Error(`${field} must be a boolean or one of: parent, none`);
 }
 
-export type SwarmPolicyParam = string | number | boolean | null;
-export type SwarmPolicyParams = Readonly<Record<string, SwarmPolicyParam>>;
-export type SwarmPolicyRef =
-	| string
-	| {
-			plugin?: string;
-			id: string;
-			params?: SwarmPolicyParams;
-	  };
+export type ShortleashPolicyParam = string | number | boolean | null;
+export type ShortleashPolicyParams = Readonly<Record<string, ShortleashPolicyParam>>;
+export interface ShortleashPolicyRefObject {
+	path: string;
+	params?: ShortleashPolicyParams;
+}
+export type ShortleashPolicyRef = string | ShortleashPolicyRefObject;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -218,7 +180,7 @@ function validatePolicyParamKey(key: string, field: string): void {
 	}
 }
 
-function isPolicyParam(value: unknown): value is SwarmPolicyParam {
+function isPolicyParam(value: unknown): value is ShortleashPolicyParam {
 	return (
 		value === null ||
 		typeof value === "string" ||
@@ -227,11 +189,11 @@ function isPolicyParam(value: unknown): value is SwarmPolicyParam {
 	);
 }
 
-export function normalizePolicyParams(value: unknown, field: string): SwarmPolicyParams | undefined {
+export function normalizePolicyParams(value: unknown, field: string): ShortleashPolicyParams | undefined {
 	if (value === undefined) return undefined;
 	if (!isRecord(value)) throw new Error(`${field} must be an object of scalar values`);
 
-	const params: Record<string, SwarmPolicyParam> = {};
+	const params: Record<string, ShortleashPolicyParam> = {};
 	for (const [key, raw] of Object.entries(value)) {
 		validatePolicyParamKey(key, field);
 		if (!isPolicyParam(raw)) {
@@ -242,80 +204,30 @@ export function normalizePolicyParams(value: unknown, field: string): SwarmPolic
 	return params;
 }
 
-function parseInlineParamValue(value: string, field: string): SwarmPolicyParam {
-	let decoded: string;
-	try {
-		decoded = decodeURIComponent(value.trim());
-	} catch {
-		throw new Error(`${field} contains an invalid percent-encoded value`);
-	}
-	if (decoded === "true") return true;
-	if (decoded === "false") return false;
-	if (decoded === "null") return null;
-	if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(decoded)) return Number(decoded);
-	return decoded;
-}
-
-export function parsePolicyRef(value: string, field = "policy reference"): SwarmPolicyRef {
+export function parseShortleashPolicyPath(value: string, field = "policy path"): string {
 	const text = value.trim();
 	if (text.length === 0) throw new Error(`${field} must not be empty`);
-
-	const segments = text.split("::");
-	const head = segments.shift()!;
-	if (segments.length === 0) return text;
-	const separator = head.indexOf(":");
-	if (separator !== -1 && head.indexOf(":", separator + 1) !== -1) {
-		throw new Error(`${field} must contain at most one plugin separator`);
-	}
-	const plugin = separator === -1 ? undefined : head.slice(0, separator).trim();
-	const id = (separator === -1 ? head : head.slice(separator + 1)).trim();
-	if (plugin !== undefined && plugin.length === 0) throw new Error(`${field} plugin must not be empty`);
-	if (id.length === 0) throw new Error(`${field} id must not be empty`);
-
-	const params: Record<string, SwarmPolicyParam> = {};
-	for (const [index, segment] of segments.entries()) {
-		const equals = segment.indexOf("=");
-		if (equals <= 0) throw new Error(`${field} parameter ${index + 1} must use key=value`);
-		const key = segment.slice(0, equals).trim();
-		validatePolicyParamKey(key, `${field} parameter ${index + 1}`);
-		if (Object.hasOwn(params, key)) throw new Error(`${field} contains duplicate parameter '${key}'`);
-		params[key] = parseInlineParamValue(segment.slice(equals + 1), `${field} parameter ${index + 1}`);
-	}
-
-	return {
-		...(plugin !== undefined ? { plugin } : {}),
-		id,
-		params,
-	};
+	if (!text.endsWith(".ts")) throw new Error(`${field} must point to a .ts file`);
+	return text;
 }
 
-function parsePolicyRefs(value: unknown, field: string): SwarmPolicyRef[] {
+function parsePolicyRefs(value: unknown, field: string): ShortleashPolicyRef[] {
 	if (value === undefined) return [];
 	if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
 
 	return value.map((entry, index) => {
-		if (typeof entry === "string") return parsePolicyRef(entry, `${field}[${index}]`);
-		if (!isRecord(entry) || typeof entry.id !== "string" || entry.id.trim().length === 0) {
-			throw new Error(`${field}[${index}] must be a string or an object with an id`);
+		if (typeof entry === "string") return parseShortleashPolicyPath(entry, `${field}[${index}]`);
+		if (!isRecord(entry) || typeof entry.path !== "string") {
+			throw new Error(`${field}[${index}] must be a .ts path or an object with a path`);
 		}
-		if (entry.plugin !== undefined && (typeof entry.plugin !== "string" || entry.plugin.trim().length === 0)) {
-			throw new Error(`${field}[${index}].plugin must be a non-empty string when provided`);
-		}
+		assertKnownKeys(entry, new Set(["path", "params"]), `${field}[${index}]`);
+		const policyPath = parseShortleashPolicyPath(entry.path, `${field}[${index}].path`);
 		const params = normalizePolicyParams(entry.params, `${field}[${index}].params`);
 		return {
-			...(typeof entry.plugin === "string" ? { plugin: entry.plugin.trim() } : {}),
-			id: entry.id.trim(),
+			path: policyPath,
 			...(params === undefined ? {} : { params }),
 		};
 	});
-}
-
-function parsePluginPaths(value: unknown): string[] {
-	if (value === undefined) return [];
-	if (!Array.isArray(value) || value.some(entry => typeof entry !== "string" || entry.trim().length === 0)) {
-		throw new Error("swarm.plugins must be an array of non-empty strings");
-	}
-	return value.map(entry => entry.trim());
 }
 function rejectRemovedPolicyFields(value: Record<string, unknown>, field: string): void {
 	if (Object.hasOwn(value, "rules") || Object.hasOwn(value, "must")) {
@@ -344,10 +256,10 @@ function parseStringArray(value: unknown, field: string): string[] {
 	return value.map(entry => entry.trim());
 }
 /** Validate the untrusted raw definition shape before normalization. */
-export function validateSwarmInput(value: unknown, field = "swarm"): asserts value is Record<string, unknown> {
+export function validateShortleashInput(value: unknown, field = "swarm"): asserts value is Record<string, unknown> {
 	if (!isRecord(value)) throw new Error(`${field} must be an object`);
 	rejectRemovedPolicyFields(value, field);
-	assertKnownKeys(value, RAW_SWARM_KEYS, field);
+	assertKnownKeys(value, RAW_SHORTLEASH_KEYS, field);
 	if (value.agents === undefined) return;
 	if (!isRecord(value.agents) || Object.keys(value.agents).length === 0) {
 		throw new Error(`${field}.agents must contain at least one agent when provided`);
@@ -366,58 +278,57 @@ function assertKnownKeys(value: Record<string, unknown>, allowed: ReadonlySet<st
 	}
 }
 
-export function parseSwarm(content: string): SwarmDefinition {
-	const raw = parseStructuredDocument(content);
-	if (!isRecord(raw) || !isRecord(raw.swarm)) {
-		throw new Error("Swarm definition must have a top-level 'swarm' key");
+export function parseShortleash(content: string): ShortleashDefinition {
+	if (content.trim().length === 0) {
+		throw new Error("Shortleash definition must not be empty");
 	}
-	validateSwarmInput(raw.swarm);
-	const swarm = raw.swarm as RawSwarmConfig;
-	rejectRemovedPolicyFields(swarm, "swarm");
+	let raw: unknown;
+	try {
+		raw = JSON.parse(content);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`Shortleash definition must be valid JSON: ${message}`);
+	}
+	if (!isRecord(raw) || !isRecord(raw.swarm)) {
+		throw new Error("Shortleash definition must have a top-level 'swarm' key");
+	}
+	validateShortleashInput(raw.swarm);
+	const config = raw.swarm as RawShortleashConfig;
+	rejectRemovedPolicyFields(config, "swarm");
 
-	const name = parseRequiredString(swarm.name, "swarm.name");
-	if (!VALID_SWARM_NAME.test(name)) {
+	const name = parseRequiredString(config.name, "swarm.name");
+	if (!VALID_SHORTLEASH_NAME.test(name)) {
 		throw new Error("swarm.name may only contain letters, numbers, dot, underscore, and dash");
 	}
-	const workspace = parseRequiredString(swarm.workspace, "swarm.workspace");
-	const task = parseOptionalString(swarm.task, "swarm.task");
-	const rawAgents = swarm.agents;
+	const workspace = parseRequiredString(config.workspace, "swarm.workspace");
+	const task = parseOptionalString(config.task, "swarm.task");
+	const rawAgents = config.agents;
 	if (rawAgents !== undefined && (!isRecord(rawAgents) || Object.keys(rawAgents).length === 0)) {
 		throw new Error("swarm.agents must contain at least one agent when provided");
 	}
 
-	const modeValue = swarm.mode ?? "sequential";
-	if (typeof modeValue !== "string" || !VALID_MODES.has(modeValue)) {
-		throw new Error(`Invalid mode '${String(modeValue)}'. Must be one of: ${[...VALID_MODES].join(", ")}`);
-	}
-	const mode = modeValue as SwarmMode;
-	const agentExecution = parseAgentExecution(swarm.agent_execution);
 	const workspaceIsolation =
-		parseIsolationMode(firstDefined(swarm.isolation, swarm.workspace_isolation), "swarm.isolation") ?? "none";
+		parseIsolationMode(firstDefined(config.isolation, config.workspace_isolation), "swarm.isolation") ?? "none";
 	const inheritHistory =
 		parseHistoryInheritance(
-			firstDefined(swarm.inherit_history, swarm.history, swarm.parent_history),
+			firstDefined(config.inherit_history, config.history, config.parent_history),
 			"swarm.inherit_history",
 		) ?? false;
-	const targetCount = parsePositiveInteger(swarm.target_count ?? 1, "swarm.target_count")!;
-	const failurePolicy = parseFailurePolicy(swarm.failure_policy);
-	const maxConcurrency = parsePositiveInteger(swarm.max_concurrency, "swarm.max_concurrency");
-	const agentTimeoutMs = parsePositiveInteger(swarm.agent_timeout_ms, "swarm.agent_timeout_ms");
-	const tokenBudget = parsePositiveInteger(swarm.token_budget, "swarm.token_budget");
-	const requestBudget = parsePositiveInteger(swarm.request_budget, "swarm.request_budget");
-	const model = parseOptionalString(swarm.model, "swarm.model");
-	const checks = parsePolicyRefs(swarm.checks, "swarm.checks");
-	const evals = parsePolicyRefs(swarm.evals, "swarm.evals");
+	const failurePolicy = parseFailurePolicy(config.failure_policy);
+	const agentTimeoutMs = parsePositiveInteger(config.agent_timeout_ms, "swarm.agent_timeout_ms");
+	const model = parseOptionalString(config.model, "swarm.model");
+	const checks = parsePolicyRefs(config.checks, "swarm.checks");
+	const evals = parsePolicyRefs(config.evals, "swarm.evals");
 
 	const agentOrder: string[] = [];
-	const agents = new Map<string, SwarmAgent>();
+	const agents = new Map<string, ShortleashAgent>();
 	const agentEntries = isRecord(rawAgents) ? Object.entries(rawAgents) : [];
 
 	for (const [agentName, rawConfig] of agentEntries) {
 		if (!isRecord(rawConfig)) {
 			throw new Error(`Agent '${agentName}' must be an object`);
 		}
-		const config = rawConfig as RawSwarmAgentConfig;
+		const config = rawConfig as RawShortleashAgentConfig;
 		rejectRemovedPolicyFields(config, `swarm.agents.${agentName}`);
 		const role = parseRequiredString(config.role, `Agent '${agentName}': 'role'`);
 		const agentTask = parseRequiredString(config.task, `Agent '${agentName}': 'task'`);
@@ -450,17 +361,10 @@ export function parseSwarm(content: string): SwarmDefinition {
 		task,
 		workspaceIsolation,
 		inheritHistory,
-		mode,
-		agentExecution,
-		targetCount,
 		failurePolicy,
-		maxConcurrency,
 		agentTimeoutMs,
-		tokenBudget,
-		requestBudget,
 		model,
 		agents,
-		plugins: parsePluginPaths(swarm.plugins),
 		checks,
 		evals,
 		agentOrder,
@@ -468,37 +372,23 @@ export function parseSwarm(content: string): SwarmDefinition {
 }
 
 /** Resolve an agent's effective workspace isolation mode. */
-export function resolveSwarmIsolation(definition: SwarmDefinition, agent: SwarmAgent): SwarmIsolationMode {
+export function resolveShortleashIsolation(
+	definition: ShortleashDefinition,
+	agent: ShortleashAgent,
+): ShortleashIsolationMode {
 	return agent.workspaceIsolation ?? definition.workspaceIsolation;
 }
 
 /** Resolve whether an agent receives the parent chat history. */
-export function resolveSwarmHistoryInheritance(definition: SwarmDefinition, agent: SwarmAgent): boolean {
+export function resolveShortleashHistoryInheritance(definition: ShortleashDefinition, agent: ShortleashAgent): boolean {
 	return agent.inheritHistory ?? definition.inheritHistory;
-}
-
-function parseStructuredDocument(content: string): unknown {
-	if (content.trim().length === 0) {
-		throw new Error("Swarm definition must not be empty");
-	}
-
-	try {
-		return JSON.parse(content);
-	} catch {
-		try {
-			return Bun.YAML.parse(content);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			throw new Error(`Swarm definition must be valid JSON or YAML: ${message}`);
-		}
-	}
 }
 
 // ============================================================================
 // Validation (semantic — references, constraints)
 // ============================================================================
 
-export function validateSwarmDefinition(def: SwarmDefinition): string[] {
+export function validateShortleashDefinition(def: ShortleashDefinition): string[] {
 	const errors: string[] = [];
 	const agentNames = new Set(def.agents.keys());
 
@@ -527,37 +417,21 @@ export function validateSwarmDefinition(def: SwarmDefinition): string[] {
 		}
 	}
 
-	if (def.targetCount < 1) {
-		errors.push("target_count must be at least 1");
-	}
-	if (def.mode !== "pipeline" && def.targetCount !== 1) {
-		errors.push("target_count is only supported in pipeline mode");
-	}
-	if (def.agents.size === 0 && def.targetCount !== 1) {
-		errors.push("direct current-session definitions support exactly one target_count");
-	}
-
 	return errors;
 }
 /**
  * Convert the normalized definition into a stable, JSON-safe representation.
- * The declaration order is retained because it affects implicit pipeline edges.
+ * Declaration order remains available for stable presentation and serialization.
  */
-export function serializeSwarmDefinition(definition: SwarmDefinition): Record<string, unknown> {
+export function serializeShortleashDefinition(definition: ShortleashDefinition): Record<string, unknown> {
 	return {
 		name: definition.name,
 		workspace: definition.workspace,
 		task: definition.task,
 		workspaceIsolation: definition.workspaceIsolation,
 		inheritHistory: definition.inheritHistory,
-		agentExecution: definition.agentExecution,
-		mode: definition.mode,
-		targetCount: definition.targetCount,
 		failurePolicy: definition.failurePolicy,
-		maxConcurrency: definition.maxConcurrency,
 		agentTimeoutMs: definition.agentTimeoutMs,
-		tokenBudget: definition.tokenBudget,
-		requestBudget: definition.requestBudget,
 		model: definition.model,
 		agents: definition.agentOrder.map(name => {
 			const agent = definition.agents.get(name)!;
@@ -575,7 +449,6 @@ export function serializeSwarmDefinition(definition: SwarmDefinition): Record<st
 				evals: agent.evals,
 			};
 		}),
-		plugins: definition.plugins,
 		checks: definition.checks,
 		evals: definition.evals,
 		agentOrder: definition.agentOrder,
@@ -583,7 +456,7 @@ export function serializeSwarmDefinition(definition: SwarmDefinition): Record<st
 }
 
 /** Return a stable hash used to decide whether persisted state can be resumed. */
-export function fingerprintSwarmDefinition(definition: SwarmDefinition): string {
-	const serialized = JSON.stringify(serializeSwarmDefinition(definition));
+export function fingerprintShortleashDefinition(definition: ShortleashDefinition): string {
+	const serialized = JSON.stringify(serializeShortleashDefinition(definition));
 	return new Bun.CryptoHasher("sha256").update(serialized).digest("hex");
 }

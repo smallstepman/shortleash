@@ -1,20 +1,19 @@
 /**
- * Filesystem state tracker for swarm pipeline execution.
+ * Filesystem state tracker for Shortleash pipeline execution.
  *
- * Persists pipeline and per-agent state to `.swarm_<name>/` in the workspace.
+ * Persists pipeline and per-agent state to `.shortleash_<name>/` in the workspace.
  * Supports resumability by loading state from disk.
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { SingleResult } from "@oh-my-pi/pi-coding-agent";
 import { isEnoent } from "@oh-my-pi/pi-utils";
-import type { SwarmProjectionEventType } from "../adapters/beads";
-import type { SwarmMode } from "../definition/schema";
+import type { ShortleashProjectionEventType } from "../adapters/beads";
 import type {
-	SwarmEvaluationRecord,
-	SwarmPolicyBoundary,
-	SwarmPolicyDecision,
-	SwarmPolicyFailure,
+	ShortleashEvaluationRecord,
+	ShortleashPolicyBoundary,
+	ShortleashPolicyDecision,
+	ShortleashPolicyFailure,
 } from "../policy/policy-types";
 // ============================================================================
 // State types
@@ -30,7 +29,6 @@ export interface AgentToolAction {
 export interface AgentState {
 	name: string;
 	status: AgentStatus;
-	iteration: number;
 	wave: number;
 	attempt?: number;
 	startedAt?: number;
@@ -43,12 +41,11 @@ export interface AgentState {
 	/** Bounded newest-first history, persisted for the dashboard and recovery. */
 	recentTools?: AgentToolAction[];
 }
-export interface SwarmResultRecord {
-	iteration: number;
+export interface ShortleashResultRecord {
 	attempt: number;
 	result: SingleResult;
 }
-export interface SwarmRunManifest {
+export interface ShortleashRunManifest {
 	definitionPath?: string;
 	definitionHash: string;
 	workspace: string;
@@ -56,7 +53,7 @@ export interface SwarmRunManifest {
 	extensionVersion?: string;
 	repositoryRevision?: string;
 	models: Record<string, string | undefined>;
-	pluginPaths: string[];
+	policyPaths: string[];
 	environment: {
 		platform: string;
 		arch: string;
@@ -66,46 +63,40 @@ export interface SwarmRunManifest {
 		ci?: string;
 	};
 }
-export interface SwarmPolicyObservationState {
+export interface ShortleashPolicyObservationState {
 	agent: string;
-	iteration: number;
 	attempt: number;
 	reference: string;
 	before?: unknown;
 	after?: unknown;
 }
-export interface SwarmPolicyState extends SwarmPolicyDecision {
-	iteration?: number;
+export interface ShortleashPolicyState extends ShortleashPolicyDecision {
 	wave?: number;
 	agent?: string;
 	updatedAt: number;
 }
-export interface SwarmProjectionState {
+export interface ShortleashProjectionState {
 	targetId: string;
-	event: SwarmProjectionEventType;
+	event: ShortleashProjectionEventType;
 	status: PipelineStatus;
 	detail?: string;
 	error?: string;
 	updatedAt: number;
 }
-export interface SwarmState {
-	version: 2;
+export interface ShortleashState {
+	version: 4;
 	name: string;
 	definitionHash: string;
 	workspace: string;
 	status: PipelineStatus;
-	mode: SwarmMode;
-	iteration: number;
-	nextIteration: number;
 	currentWave: number;
-	targetCount: number;
 	agents: Record<string, AgentState>;
-	results: Record<string, SwarmResultRecord[]>;
-	policy?: SwarmPolicyState;
-	policyHistory: SwarmPolicyState[];
-	policyObservations: Record<string, SwarmPolicyObservationState>;
-	projectionHistory: SwarmProjectionState[];
-	manifest?: SwarmRunManifest;
+	results: Record<string, ShortleashResultRecord[]>;
+	policy?: ShortleashPolicyState;
+	policyHistory: ShortleashPolicyState[];
+	policyObservations: Record<string, ShortleashPolicyObservationState>;
+	projectionHistory: ShortleashProjectionState[];
+	manifest?: ShortleashRunManifest;
 	startedAt: number;
 	lastResumedAt?: number;
 	completedAt?: number;
@@ -119,14 +110,13 @@ export interface StateInitOptions {
 	definitionHash?: string;
 	workspace?: string;
 	definitionPath?: string;
-	manifest?: SwarmRunManifest;
+	manifest?: ShortleashRunManifest;
 	resume?: boolean;
 	restart?: boolean;
 }
 
 export interface AgentStateUpdate {
 	status?: AgentStatus;
-	iteration?: number;
 	wave?: number;
 	attempt?: number;
 	startedAt?: number;
@@ -140,12 +130,10 @@ export interface AgentStateUpdate {
 
 export interface PipelineStateUpdate {
 	status?: PipelineStatus;
-	iteration?: number;
-	nextIteration?: number;
 	currentWave?: number;
 	completedAt?: number;
 	lastResumedAt?: number;
-	manifest?: SwarmRunManifest;
+	manifest?: ShortleashRunManifest;
 }
 
 export interface RunLockMetadata {
@@ -154,27 +142,27 @@ export interface RunLockMetadata {
 }
 
 export class StateTracker {
-	#swarmDir: string;
-	#state: SwarmState;
+	#shortleashDir: string;
+	#state: ShortleashState;
 	#persistTail: Promise<void> = Promise.resolve();
 	#lockRunId?: string;
 
 	constructor(workspaceDir: string, name: string) {
-		this.#swarmDir = path.join(workspaceDir, `.swarm_${name}`);
+		this.#shortleashDir = path.join(workspaceDir, `.shortleash_${name}`);
 		this.#state = createInitialState(name, workspaceDir);
 	}
 
-	get swarmDir(): string {
-		return this.#swarmDir;
+	get shortleashDir(): string {
+		return this.#shortleashDir;
 	}
 
-	get state(): Readonly<SwarmState> {
+	get state(): Readonly<ShortleashState> {
 		return this.#state;
 	}
 
 	async acquireRunLock(metadata: RunLockMetadata, options: { allowStaleRecovery?: boolean } = {}): Promise<void> {
-		await fs.mkdir(this.#swarmDir, { recursive: true });
-		const lockPath = path.join(this.#swarmDir, "run.lock");
+		await fs.mkdir(this.#shortleashDir, { recursive: true });
+		const lockPath = path.join(this.#shortleashDir, "run.lock");
 		const runId = `${this.#state.name}-${Date.now()}-${Bun.hash(`${process.pid}:${Math.random()}`).toString(36)}`;
 		const lock = {
 			runId,
@@ -202,7 +190,7 @@ export class StateTracker {
 				} catch (error) {
 					if (error instanceof CorruptRunLockError) {
 						throw new Error(
-							`${error.message} Verify that no swarm process is active, then remove the lock before retrying.`,
+							`${error.message} Verify that no Shortleash process is active, then remove the lock before retrying.`,
 							{ cause: error },
 						);
 					}
@@ -210,12 +198,12 @@ export class StateTracker {
 				}
 				if (existing && isProcessAlive(existing.pid)) {
 					throw new Error(
-						`Swarm '${this.#state.name}' is already running (pid ${existing.pid}, started ${new Date(existing.startedAt).toISOString()}).`,
+						`Shortleash '${this.#state.name}' is already running (pid ${existing.pid}, started ${new Date(existing.startedAt).toISOString()}).`,
 					);
 				}
 				if (!options.allowStaleRecovery) {
 					throw new Error(
-						`Swarm '${this.#state.name}' has a stale run lock at ${lockPath}. Rerun with --resume or --restart to recover it.`,
+						`Shortleash '${this.#state.name}' has a stale run lock at ${lockPath}. Rerun with --resume or --restart to recover it.`,
 					);
 				}
 				await fs.unlink(lockPath).catch(unlinkError => {
@@ -223,14 +211,14 @@ export class StateTracker {
 				});
 			}
 		}
-		throw new Error(`Could not acquire swarm lock at ${lockPath}; another process changed it.`);
+		throw new Error(`Could not acquire Shortleash lock at ${lockPath}; another process changed it.`);
 	}
 
 	async releaseRunLock(): Promise<void> {
 		const runId = this.#lockRunId;
 		if (!runId) return;
 		this.#lockRunId = undefined;
-		const lockPath = path.join(this.#swarmDir, "run.lock");
+		const lockPath = path.join(this.#shortleashDir, "run.lock");
 		try {
 			const existing = await readLock(lockPath);
 			if (existing?.runId === runId) await fs.unlink(lockPath);
@@ -240,28 +228,23 @@ export class StateTracker {
 		}
 	}
 
-	async init(
-		agentNames: readonly string[],
-		targetCount: number,
-		mode: SwarmMode,
-		options: StateInitOptions = {},
-	): Promise<{ resumed: boolean }> {
-		await fs.mkdir(path.join(this.#swarmDir, "state"), { recursive: true });
-		await fs.mkdir(path.join(this.#swarmDir, "logs"), { recursive: true });
-		await fs.mkdir(path.join(this.#swarmDir, "context"), { recursive: true });
+	async init(agentNames: readonly string[], options: StateInitOptions = {}): Promise<{ resumed: boolean }> {
+		await fs.mkdir(path.join(this.#shortleashDir, "state"), { recursive: true });
+		await fs.mkdir(path.join(this.#shortleashDir, "logs"), { recursive: true });
+		await fs.mkdir(path.join(this.#shortleashDir, "context"), { recursive: true });
 
 		const existing = await this.load();
 		if (existing) {
 			if (!options.resume && !options.restart) {
 				throw new Error(
-					`Swarm '${existing.name}' already has persisted state (${existing.status}). Use --resume to continue it or --restart to run it again.`,
+					`Shortleash '${existing.name}' already has persisted state (${existing.status}). Use --resume to continue it or --restart to run it again.`,
 				);
 			}
 			if (options.resume) {
 				if (existing.status === "completed") {
-					throw new Error(`Swarm '${existing.name}' is already completed. Use --restart to run it again.`);
+					throw new Error(`Shortleash '${existing.name}' is already completed. Use --restart to run it again.`);
 				}
-				assertResumeCompatible(existing, agentNames, targetCount, mode, options);
+				assertResumeCompatible(existing, agentNames, options);
 				this.#state = existing;
 				this.#state.status = "running";
 				this.#state.completedAt = undefined;
@@ -271,16 +254,14 @@ export class StateTracker {
 				return { resumed: true };
 			}
 		} else if (options.resume) {
-			throw new Error(`Cannot resume swarm '${this.#state.name}': no persisted state was found.`);
+			throw new Error(`Cannot resume Shortleash '${this.#state.name}': no persisted state was found.`);
 		}
 
-		this.#state = createInitialState(this.#state.name, options.workspace ?? path.dirname(this.#swarmDir), {
+		this.#state = createInitialState(this.#state.name, options.workspace ?? path.dirname(this.#shortleashDir), {
 			definitionHash: options.definitionHash,
 			workspace: options.workspace,
 			definitionPath: options.definitionPath,
 			manifest: options.manifest,
-			mode,
-			targetCount,
 			agentNames,
 		});
 		await this.#persist();
@@ -289,7 +270,7 @@ export class StateTracker {
 
 	async updateAgent(name: string, update: AgentStateUpdate): Promise<void> {
 		const agent = this.#state.agents[name];
-		if (!agent) throw new Error(`Unknown swarm agent '${name}'.`);
+		if (!agent) throw new Error(`Unknown Shortleash agent '${name}'.`);
 		Object.assign(agent, update);
 		await this.#persist();
 	}
@@ -299,25 +280,24 @@ export class StateTracker {
 		await this.#persist();
 	}
 
-	async recordResult(agentName: string, iteration: number, attempt: number, result: SingleResult): Promise<void> {
-		if (!this.#state.agents[agentName]) throw new Error(`Unknown swarm agent '${agentName}'.`);
-		assertNonNegativeInteger(iteration, "iteration");
+	async recordResult(agentName: string, attempt: number, result: SingleResult): Promise<void> {
+		if (!this.#state.agents[agentName]) throw new Error(`Unknown Shortleash agent '${agentName}'.`);
 		assertNonNegativeInteger(attempt, "attempt");
 		const records = this.#state.results[agentName] ?? [];
-		const record = { iteration, attempt, result: durableSnapshot(result) as SingleResult };
-		const existingIndex = records.findIndex(item => item.iteration === iteration && item.attempt === attempt);
+		const record = { attempt, result: durableSnapshot(result) as SingleResult };
+		const existingIndex = records.findIndex(item => item.attempt === attempt);
 		if (existingIndex === -1) records.push(record);
 		else records[existingIndex] = record;
-		records.sort((left, right) => left.iteration - right.iteration || left.attempt - right.attempt);
+		records.sort((left, right) => left.attempt - right.attempt);
 		this.#state.results[agentName] = records;
 		await this.#persist();
 	}
 
 	async updatePolicy(
-		policy: SwarmPolicyDecision,
-		location: { iteration?: number; wave?: number; agent?: string } = {},
+		policy: ShortleashPolicyDecision,
+		location: { wave?: number; agent?: string } = {},
 	): Promise<void> {
-		const snapshot: SwarmPolicyState = {
+		const snapshot: ShortleashPolicyState = {
 			boundary: policy.boundary,
 			...location,
 			accepted: policy.accepted,
@@ -342,9 +322,10 @@ export class StateTracker {
 		this.#state.policyHistory.push(snapshot);
 		await this.#persist();
 	}
+
 	async recordProjection(
 		targetId: string,
-		event: SwarmProjectionEventType,
+		event: ShortleashProjectionEventType,
 		status: PipelineStatus,
 		detail?: string,
 		error?: string,
@@ -362,19 +343,17 @@ export class StateTracker {
 
 	async recordPolicyObservations(
 		agent: string,
-		iteration: number,
 		attempt: number,
 		phase: "before" | "after",
 		observations: ReadonlyMap<string, unknown>,
 	): Promise<void> {
 		if (observations.size === 0) return;
 		for (const [reference, snapshot] of observations) {
-			const key = policyObservationKey(agent, iteration, attempt, reference);
+			const key = policyObservationKey(agent, attempt, reference);
 			let record = this.#state.policyObservations[key];
 			if (!record) {
 				record = {
 					agent,
-					iteration,
 					attempt,
 					reference,
 				};
@@ -386,19 +365,19 @@ export class StateTracker {
 	}
 
 	async appendLog(agentName: string, message: string): Promise<void> {
-		const logPath = path.join(this.#swarmDir, "logs", `${agentName}.log`);
+		const logPath = path.join(this.#shortleashDir, "logs", `${agentName}.log`);
 		const timestamp = new Date().toISOString();
 		await fs.appendFile(logPath, `[${timestamp}] ${message}\n`);
 	}
 
 	async appendOrchestratorLog(message: string): Promise<void> {
-		const logPath = path.join(this.#swarmDir, "logs", "orchestrator.log");
+		const logPath = path.join(this.#shortleashDir, "logs", "orchestrator.log");
 		const timestamp = new Date().toISOString();
 		await fs.appendFile(logPath, `[${timestamp}] ${message}\n`);
 	}
 
-	async load(): Promise<SwarmState | null> {
-		const statePath = path.join(this.#swarmDir, "state", "pipeline.json");
+	async load(): Promise<ShortleashState | null> {
+		const statePath = path.join(this.#shortleashDir, "state", "pipeline.json");
 		let content: string;
 		try {
 			content = await Bun.file(statePath).text();
@@ -411,7 +390,7 @@ export class StateTracker {
 			parsed = JSON.parse(content);
 		} catch (error) {
 			throw new Error(
-				`Swarm state at ${statePath} is corrupt: ${error instanceof Error ? error.message : String(error)}`,
+				`Shortleash state at ${statePath} is corrupt: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 		this.#state = normalizeState(parsed, this.#state.name);
@@ -420,7 +399,7 @@ export class StateTracker {
 
 	async #persist(): Promise<void> {
 		const write = this.#persistTail.then(async () => {
-			const statePath = path.join(this.#swarmDir, "state", "pipeline.json");
+			const statePath = path.join(this.#shortleashDir, "state", "pipeline.json");
 			const temporaryPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
 			const content = JSON.stringify(this.#state, null, 2);
 			try {
@@ -452,9 +431,7 @@ interface StateInitValues {
 	definitionHash?: string;
 	workspace?: string;
 	definitionPath?: string;
-	manifest?: SwarmRunManifest;
-	mode: SwarmMode;
-	targetCount: number;
+	manifest?: ShortleashRunManifest;
 	agentNames: readonly string[];
 }
 interface RunLock extends RunLockMetadata {
@@ -465,37 +442,32 @@ interface RunLock extends RunLockMetadata {
 
 class CorruptRunLockError extends Error {
 	constructor(lockPath: string, detail: string) {
-		super(`Swarm run lock at ${lockPath} is corrupt: ${detail}`);
+		super(`Shortleash run lock at ${lockPath} is corrupt: ${detail}`);
 		this.name = "CorruptRunLockError";
 	}
 }
 
-function createInitialState(name: string, workspace: string, values?: Partial<StateInitValues>): SwarmState {
+function createInitialState(name: string, workspace: string, values?: Partial<StateInitValues>): ShortleashState {
 	const agentNames = values?.agentNames ?? [];
 	const now = Date.now();
 	const agents: Record<string, AgentState> = {};
-	const results: Record<string, SwarmResultRecord[]> = {};
+	const results: Record<string, ShortleashResultRecord[]> = {};
 	for (const agentName of agentNames) {
 		agents[agentName] = {
 			name: agentName,
 			status: "pending",
-			iteration: 0,
 			wave: 0,
 			attempt: 0,
 		};
 		results[agentName] = [];
 	}
 	return {
-		version: 2,
+		version: 4,
 		name,
 		definitionHash: values?.definitionHash ?? "unknown",
 		workspace: values?.workspace ?? workspace,
 		status: "running",
-		mode: values?.mode ?? "sequential",
-		iteration: 0,
-		nextIteration: 0,
 		currentWave: 0,
-		targetCount: values?.targetCount ?? 1,
 		agents,
 		results,
 		policyHistory: [],
@@ -506,11 +478,9 @@ function createInitialState(name: string, workspace: string, values?: Partial<St
 	};
 }
 
-function normalizeState(value: unknown, fallbackName: string): SwarmState {
-	if (!isRecord(value)) throw new Error("Swarm state must contain a JSON object.");
+function normalizeState(value: unknown, fallbackName: string): ShortleashState {
+	if (!isRecord(value)) throw new Error("Shortleash state must contain a JSON object.");
 
-	const targetCount = positiveInteger(value.targetCount) ?? 1;
-	const iteration = nonNegativeInteger(value.iteration) ?? 0;
 	const status = isPipelineStatus(value.status) ? value.status : "failed";
 	const rawAgents = isRecord(value.agents) ? value.agents : {};
 	const agents: Record<string, AgentState> = {};
@@ -520,16 +490,18 @@ function normalizeState(value: unknown, fallbackName: string): SwarmState {
 	}
 
 	const rawResults = isRecord(value.results) ? value.results : {};
-	const results: Record<string, SwarmResultRecord[]> = {};
+	const results: Record<string, ShortleashResultRecord[]> = {};
 	for (const [name, raw] of Object.entries(rawResults)) {
 		if (!Array.isArray(raw)) continue;
-		results[name] = raw.flatMap(record => {
-			if (!isRecord(record)) return [];
-			const recordIteration = nonNegativeInteger(record.iteration);
+		const byAttempt = new Map<number, SingleResult>();
+		for (const record of raw) {
+			if (!isRecord(record)) continue;
 			const attempt = nonNegativeInteger(record.attempt);
-			if (recordIteration === undefined || attempt === undefined || !isSingleResult(record.result)) return [];
-			return [{ iteration: recordIteration, attempt, result: record.result }];
-		});
+			if (attempt !== undefined && isSingleResult(record.result)) byAttempt.set(attempt, record.result);
+		}
+		results[name] = [...byAttempt.entries()]
+			.sort(([left], [right]) => left - right)
+			.map(([attempt, result]) => ({ attempt, result }));
 	}
 
 	const policy = normalizePolicyState(value.policy);
@@ -542,7 +514,7 @@ function normalizeState(value: unknown, fallbackName: string): SwarmState {
 			? [policy]
 			: [];
 
-	const policyObservations: Record<string, SwarmPolicyObservationState> = {};
+	const policyObservations: Record<string, ShortleashPolicyObservationState> = {};
 	if (isRecord(value.policyObservations)) {
 		for (const [key, raw] of Object.entries(value.policyObservations)) {
 			const observation = normalizePolicyObservation(raw);
@@ -550,7 +522,7 @@ function normalizeState(value: unknown, fallbackName: string): SwarmState {
 		}
 	}
 
-	const projectionHistory: SwarmProjectionState[] = Array.isArray(value.projectionHistory)
+	const projectionHistory: ShortleashProjectionState[] = Array.isArray(value.projectionHistory)
 		? value.projectionHistory.flatMap(entry => {
 				const normalized = normalizeProjectionState(entry);
 				return normalized ? [normalized] : [];
@@ -558,16 +530,12 @@ function normalizeState(value: unknown, fallbackName: string): SwarmState {
 		: [];
 
 	return {
-		version: 2,
+		version: 4,
 		name: nonEmptyString(value.name) ?? fallbackName,
 		definitionHash: nonEmptyString(value.definitionHash) ?? "legacy",
 		workspace: typeof value.workspace === "string" ? value.workspace : "",
 		status,
-		mode: isSwarmMode(value.mode) ? value.mode : "sequential",
-		iteration,
-		nextIteration: nonNegativeInteger(value.nextIteration) ?? (status === "completed" ? targetCount : iteration),
 		currentWave: nonNegativeInteger(value.currentWave) ?? 0,
-		targetCount,
 		agents,
 		results,
 		policy,
@@ -580,6 +548,7 @@ function normalizeState(value: unknown, fallbackName: string): SwarmState {
 		completedAt: finiteNumber(value.completedAt),
 	};
 }
+
 function normalizeAgentState(name: string, value: unknown): AgentState | undefined {
 	if (!isRecord(value)) return undefined;
 	const recentTools = Array.isArray(value.recentTools)
@@ -594,7 +563,6 @@ function normalizeAgentState(name: string, value: unknown): AgentState | undefin
 	return {
 		name,
 		status: isAgentStatus(value.status) ? value.status : "pending",
-		iteration: nonNegativeInteger(value.iteration) ?? 0,
 		wave: nonNegativeInteger(value.wave) ?? 0,
 		attempt: nonNegativeInteger(value.attempt) ?? 0,
 		startedAt: finiteNumber(value.startedAt),
@@ -625,21 +593,20 @@ function isSingleResult(value: unknown): value is SingleResult {
 	);
 }
 
-function normalizePolicyState(value: unknown): SwarmPolicyState | undefined {
+function normalizePolicyState(value: unknown): ShortleashPolicyState | undefined {
 	if (!isRecord(value)) return undefined;
 	const decision = normalizePolicyDecision(value);
 	const updatedAt = finiteNumber(value.updatedAt);
 	if (!decision || updatedAt === undefined) return undefined;
 	return {
 		...decision,
-		iteration: nonNegativeInteger(value.iteration),
 		wave: nonNegativeInteger(value.wave),
 		agent: optionalString(value.agent),
 		updatedAt,
 	};
 }
 
-function normalizePolicyDecision(value: Record<string, unknown>): SwarmPolicyDecision | undefined {
+function normalizePolicyDecision(value: Record<string, unknown>): ShortleashPolicyDecision | undefined {
 	if (!isPolicyBoundary(value.boundary) || typeof value.accepted !== "boolean") return undefined;
 	if (!Array.isArray(value.failures) || !Array.isArray(value.evaluations)) return undefined;
 	const failures = value.failures.flatMap(entry => {
@@ -653,7 +620,7 @@ function normalizePolicyDecision(value: Record<string, unknown>): SwarmPolicyDec
 	return { boundary: value.boundary, accepted: value.accepted, failures, evaluations };
 }
 
-function normalizePolicyFailure(value: unknown): SwarmPolicyFailure | undefined {
+function normalizePolicyFailure(value: unknown): ShortleashPolicyFailure | undefined {
 	if (!isRecord(value) || !isPolicyKind(value.source)) return undefined;
 	const id = nonEmptyString(value.id);
 	const message = nonEmptyString(value.message);
@@ -667,7 +634,7 @@ function normalizePolicyFailure(value: unknown): SwarmPolicyFailure | undefined 
 	};
 }
 
-function normalizeEvaluationRecord(value: unknown): SwarmEvaluationRecord | undefined {
+function normalizeEvaluationRecord(value: unknown): ShortleashEvaluationRecord | undefined {
 	if (!isRecord(value)) return undefined;
 	const id = nonEmptyString(value.id);
 	const version = nonEmptyString(value.version);
@@ -683,16 +650,14 @@ function normalizeEvaluationRecord(value: unknown): SwarmEvaluationRecord | unde
 	};
 }
 
-function normalizePolicyObservation(value: unknown): SwarmPolicyObservationState | undefined {
+function normalizePolicyObservation(value: unknown): ShortleashPolicyObservationState | undefined {
 	if (!isRecord(value)) return undefined;
 	const agent = nonEmptyString(value.agent);
-	const iteration = nonNegativeInteger(value.iteration);
 	const attempt = nonNegativeInteger(value.attempt);
 	const reference = nonEmptyString(value.reference);
-	if (!agent || iteration === undefined || attempt === undefined || !reference) return undefined;
+	if (!agent || attempt === undefined || !reference) return undefined;
 	return {
 		agent,
-		iteration,
 		attempt,
 		reference,
 		before: value.before,
@@ -700,7 +665,7 @@ function normalizePolicyObservation(value: unknown): SwarmPolicyObservationState
 	};
 }
 
-function normalizeProjectionState(value: unknown): SwarmProjectionState | undefined {
+function normalizeProjectionState(value: unknown): ShortleashProjectionState | undefined {
 	if (!isRecord(value)) return undefined;
 	const targetId = nonEmptyString(value.targetId);
 	const updatedAt = finiteNumber(value.updatedAt);
@@ -717,7 +682,7 @@ function normalizeProjectionState(value: unknown): SwarmProjectionState | undefi
 	};
 }
 
-function normalizeManifest(value: unknown): SwarmRunManifest | undefined {
+function normalizeManifest(value: unknown): ShortleashRunManifest | undefined {
 	if (!isRecord(value) || !isRecord(value.environment)) return undefined;
 	const environment = value.environment;
 	const requiredEnvironment = ["platform", "arch", "bunVersion", "nodeVersion", "cwd"] as const;
@@ -736,7 +701,7 @@ function normalizeManifest(value: unknown): SwarmRunManifest | undefined {
 		extensionVersion: optionalString(value.extensionVersion),
 		repositoryRevision: optionalString(value.repositoryRevision),
 		models,
-		pluginPaths: normalizeStringArray(value.pluginPaths),
+		policyPaths: normalizeStringArray(value.policyPaths),
 		environment: {
 			platform: environment.platform as string,
 			arch: environment.arch as string,
@@ -749,29 +714,24 @@ function normalizeManifest(value: unknown): SwarmRunManifest | undefined {
 }
 
 function assertResumeCompatible(
-	state: SwarmState,
+	state: ShortleashState,
 	agentNames: readonly string[],
-	targetCount: number,
-	mode: SwarmMode,
 	options: StateInitOptions,
 ): void {
 	if (options.definitionHash && state.definitionHash !== "unknown" && state.definitionHash !== "legacy") {
 		if (state.definitionHash !== options.definitionHash) {
 			throw new Error(
-				`Cannot resume swarm '${state.name}': definition hash changed (${state.definitionHash.slice(0, 12)} != ${options.definitionHash.slice(0, 12)}).`,
+				`Cannot resume Shortleash '${state.name}': definition hash changed (${state.definitionHash.slice(0, 12)} != ${options.definitionHash.slice(0, 12)}).`,
 			);
 		}
 	}
 	if (options.workspace && state.workspace && path.resolve(state.workspace) !== path.resolve(options.workspace)) {
-		throw new Error(`Cannot resume swarm '${state.name}': workspace changed.`);
-	}
-	if (state.mode !== mode || state.targetCount !== targetCount) {
-		throw new Error(`Cannot resume swarm '${state.name}': mode or target_count changed.`);
+		throw new Error(`Cannot resume Shortleash '${state.name}': workspace changed.`);
 	}
 	const existingNames = Object.keys(state.agents).sort();
 	const requestedNames = [...agentNames].sort();
 	if (JSON.stringify(existingNames) !== JSON.stringify(requestedNames)) {
-		throw new Error(`Cannot resume swarm '${state.name}': agent set changed.`);
+		throw new Error(`Cannot resume Shortleash '${state.name}': agent set changed.`);
 	}
 }
 
@@ -830,9 +790,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isPipelineStatus(value: unknown): value is PipelineStatus {
 	return value === "idle" || value === "running" || value === "completed" || value === "failed" || value === "aborted";
 }
-function isSwarmMode(value: unknown): value is SwarmMode {
-	return value === "pipeline" || value === "parallel" || value === "sequential";
-}
 
 function isAgentStatus(value: unknown): value is AgentStatus {
 	return (
@@ -875,26 +832,26 @@ function isAgentSource(value: unknown): value is "bundled" | "user" | "project" 
 	return value === "bundled" || value === "user" || value === "project";
 }
 
-function isPolicyBoundary(value: unknown): value is SwarmPolicyBoundary {
-	return value === "agent" || value === "wave" || value === "iteration" || value === "complete";
+function isPolicyBoundary(value: unknown): value is ShortleashPolicyBoundary {
+	return value === "agent" || value === "wave" || value === "complete";
 }
 
-function isPolicyKind(value: unknown): value is SwarmPolicyFailure["source"] {
+function isPolicyKind(value: unknown): value is ShortleashPolicyFailure["source"] {
 	return value === "check" || value === "eval";
 }
 
-function isPolicyOutcome(value: unknown): value is SwarmEvaluationRecord["outcome"] {
+function isPolicyOutcome(value: unknown): value is ShortleashEvaluationRecord["outcome"] {
 	return value === "pass" || value === "fail";
 }
 
-function isProjectionEventType(value: unknown): value is SwarmProjectionEventType {
+function isProjectionEventType(value: unknown): value is ShortleashProjectionEventType {
 	return (
 		value === "started" || value === "blocked" || value === "failed" || value === "aborted" || value === "completed"
 	);
 }
 
-function policyObservationKey(agent: string, iteration: number, attempt: number, reference: string): string {
-	return `${agent}/iteration-${iteration}/attempt-${attempt}/${reference}`;
+function policyObservationKey(agent: string, attempt: number, reference: string): string {
+	return `${agent}/attempt-${attempt}/${reference}`;
 }
 
 function durableSnapshot(value: unknown): unknown {

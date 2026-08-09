@@ -10,8 +10,8 @@ import {
 	textLine,
 } from "@thi.ng/text-canvas";
 import { type Graph, graphConnect, type LayoutResult, shapeRect, sugiyama, tweakShape } from "d3-dag";
-import type { SwarmDefinition } from "../definition/schema";
-import type { SwarmState } from "../execution/state";
+import type { ShortleashDefinition } from "../definition/schema";
+import type { ShortleashState } from "../execution/state";
 
 const GRAPH_NODE_HEIGHT = 3;
 const MIN_GRAPH_NODE_WIDTH = 8;
@@ -74,8 +74,8 @@ type DenseConnectorCell = {
  * continuous and active links remain visually distinct.
  */
 export function renderExecutionGraph(
-	definition: SwarmDefinition,
-	state: SwarmState,
+	definition: ShortleashDefinition,
+	state: ShortleashState,
 	width: number,
 	theme: GraphTheme,
 	animationFrame: number,
@@ -205,7 +205,7 @@ function graphFailure(message: string, width: number, theme: GraphTheme): string
 	return [theme.fg("error", truncateToWidth(`  ${message}`, Math.max(1, Math.floor(width))))];
 }
 
-function orderedAgentNames(definition: SwarmDefinition): string[] {
+function orderedAgentNames(definition: ShortleashDefinition): string[] {
 	const ordered = definition.agentOrder.filter(name => definition.agents.has(name));
 	const remaining = [...definition.agents.keys()]
 		.filter(name => !definition.agentOrder.includes(name))

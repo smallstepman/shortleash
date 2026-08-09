@@ -2,18 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ModelRegistry, SingleResult } from "@oh-my-pi/pi-coding-agent";
 import * as taskExecutor from "@oh-my-pi/pi-coding-agent";
-import { parseSwarm } from "../../../src/orchestration/definition/schema";
+import { type ModelRegistry, Settings, type SingleResult } from "@oh-my-pi/pi-coding-agent";
+import { parseShortleash } from "../../../src/orchestration/definition/schema";
 import { buildDependencyGraph, buildExecutionWaves } from "../../../src/orchestration/execution/dag";
 import { PipelineController } from "../../../src/orchestration/execution/pipeline";
 import { StateTracker } from "../../../src/orchestration/execution/state";
-import { SwarmPolicyRegistry } from "../../../src/orchestration/policy/plugins";
+import { ShortleashPolicyRegistry } from "../../../src/orchestration/policy/policies";
 
 let workspace: string;
+function policyPath(name: string): string {
+	return path.resolve(process.cwd(), "test", "fixtures", `${name}.ts`);
+}
 
 beforeEach(async () => {
-	workspace = await fs.mkdtemp(path.join(os.tmpdir(), "swarm-pipeline-test-"));
+	workspace = await fs.mkdtemp(path.join(os.tmpdir(), "shortleash-pipeline-test-"));
 });
 
 afterEach(async () => {
@@ -22,23 +25,41 @@ afterEach(async () => {
 });
 
 describe("pipeline agent guardrails", () => {
+	it("places independent agents in one initial wave", () => {
+		const definition = parseShortleash(
+			JSON.stringify({
+				swarm: {
+					name: "independent-wave",
+					workspace: ".",
+					agents: {
+						first: { role: "worker", task: "first" },
+						second: { role: "worker", task: "second" },
+					},
+				},
+			}),
+		);
+		expect(buildExecutionWaves(buildDependencyGraph(definition))).toEqual([["first", "second"]]);
+	});
 	it("blocks a wave when an agent-scoped check fails", async () => {
-		const definition = parseSwarm(`
-swarm:
-  name: scoped-policy-pipeline
-  workspace: .
-  mode: parallel
-  agents:
-    worker:
-      role: tester
-      task: run the test
-      checks:
-        - fixture:block
-`);
+		const definition = parseShortleash(
+			JSON.stringify({
+				swarm: {
+					name: "scoped-policy-pipeline",
+					workspace: ".",
+					agents: {
+						worker: {
+							role: "tester",
+							task: "run the test",
+							checks: [policyPath("block")],
+						},
+					},
+				},
+			}),
+		);
 		const deps = buildDependencyGraph(definition);
 		const waves = buildExecutionWaves(deps);
 		const stateTracker = new StateTracker(workspace, definition.name);
-		await stateTracker.init([...definition.agents.keys()], definition.targetCount, definition.mode);
+		await stateTracker.init([...definition.agents.keys()]);
 
 		const result: SingleResult = {
 			index: 0,
@@ -56,17 +77,11 @@ swarm:
 		};
 		vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValue(result);
 
-		const policyRegistry = new SwarmPolicyRegistry();
-		policyRegistry.register({
-			name: "fixture",
-			checks: [
-				{
-					id: "block",
-					description: "agent policy blocked",
-					boundary: "wave",
-					check: context => context.agent !== "worker",
-				},
-			],
+		const policyRegistry = new ShortleashPolicyRegistry();
+		policyRegistry.register(policyPath("block"), {
+			description: "agent policy blocked",
+			boundary: "wave",
+			check: context => context.agent !== "worker",
 		});
 
 		const controller = new PipelineController(definition, waves, stateTracker);
@@ -77,26 +92,29 @@ swarm:
 		});
 
 		expect(pipelineResult.status).toBe("failed");
-		expect(pipelineResult.errors).toContain("check fixture:block: agent policy blocked");
+		expect(pipelineResult.errors).toContain("check ./test/fixtures/block.ts: agent policy blocked");
 		expect(pipelineResult.policy?.accepted).toBe(false);
 	});
 	it("retries an agent after a rejected finalization without spawning a new session", async () => {
-		const definition = parseSwarm(`
-swarm:
-  name: finalization-policy-pipeline
-  workspace: .
-  mode: parallel
-  agents:
-    worker:
-      role: tester
-      task: run the test
-      checks:
-        - fixture:finalize
-`);
+		const definition = parseShortleash(
+			JSON.stringify({
+				swarm: {
+					name: "finalization-policy-pipeline",
+					workspace: ".",
+					agents: {
+						worker: {
+							role: "tester",
+							task: "run the test",
+							checks: [policyPath("finalize")],
+						},
+					},
+				},
+			}),
+		);
 		const deps = buildDependencyGraph(definition);
 		const waves = buildExecutionWaves(deps);
 		const stateTracker = new StateTracker(workspace, definition.name);
-		await stateTracker.init([...definition.agents.keys()], definition.targetCount, definition.mode);
+		await stateTracker.init([...definition.agents.keys()]);
 
 		const initialResult: SingleResult = {
 			index: 0,
@@ -116,28 +134,21 @@ swarm:
 		const runSubprocessSpy = vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValue(initialResult);
 		const followUpSpy = vi.spyOn(taskExecutor, "runSubagentFollowUpTurn").mockResolvedValue(correctedResult);
 
-		const policyRegistry = new SwarmPolicyRegistry();
+		const policyRegistry = new ShortleashPolicyRegistry();
 		let evaluations = 0;
-		policyRegistry.register({
-			name: "fixture",
-			checks: [
-				{
-					id: "finalize",
-					description: "agent output must be corrected",
-					boundary: "agent",
-					capture: context => ({
-						phase: context.phase,
-						output: context.latestResults.get("worker")?.output ?? "none",
-					}),
-					check: context => {
-						evaluations++;
-						return (
-							context.observation?.after &&
-							(context.observation.after as { output?: string }).output === "corrected"
-						);
-					},
-				},
-			],
+		policyRegistry.register(policyPath("finalize"), {
+			description: "agent output must be corrected",
+			boundary: "agent",
+			capture: context => ({
+				phase: context.phase,
+				output: context.latestResults.get("worker")?.output ?? "none",
+			}),
+			check: context => {
+				evaluations++;
+				return (
+					context.observation?.after && (context.observation.after as { output?: string }).output === "corrected"
+				);
+			},
 		});
 
 		const controller = new PipelineController(definition, waves, stateTracker);
@@ -151,9 +162,8 @@ swarm:
 		expect(evaluations).toBe(2);
 		expect(runSubprocessSpy).toHaveBeenCalledTimes(1);
 		expect(runSubprocessSpy.mock.calls[0][0].keepAlive).toBe(true);
-		expect(followUpSpy).toHaveBeenCalledTimes(1);
 		expect(followUpSpy.mock.calls[0][0]).toMatchObject({
-			id: "swarm-finalization-policy-pipeline-worker-0",
+			id: "shortleash-finalization-policy-pipeline-worker",
 			message: expect.stringContaining("finalization was rejected"),
 		});
 		expect(pipelineResult.agentResults.get("worker")).toEqual([correctedResult]);
@@ -164,14 +174,12 @@ swarm:
 			expect.arrayContaining([
 				expect.objectContaining({
 					agent: "worker",
-					iteration: 0,
 					attempt: 0,
 					before: { phase: "before", output: "none" },
 					after: { phase: "after", output: "initial" },
 				}),
 				expect.objectContaining({
 					agent: "worker",
-					iteration: 0,
 					attempt: 1,
 					before: { phase: "before", output: "initial" },
 					after: { phase: "after", output: "corrected" },
@@ -183,19 +191,20 @@ swarm:
 
 describe("pipeline resume", () => {
 	it("reuses persisted successful results instead of spawning the completed agent", async () => {
-		const definition = parseSwarm(`
-swarm:
-  name: resume-pipeline
-  workspace: .
-  mode: parallel
-  agents:
-    worker:
-      role: tester
-      task: run the test
-`);
+		const definition = parseShortleash(
+			JSON.stringify({
+				swarm: {
+					name: "resume-pipeline",
+					workspace: ".",
+					agents: {
+						worker: { role: "tester", task: "run the test" },
+					},
+				},
+			}),
+		);
 		const waves = buildExecutionWaves(buildDependencyGraph(definition));
 		const stateTracker = new StateTracker(workspace, definition.name);
-		await stateTracker.init([...definition.agents.keys()], definition.targetCount, definition.mode);
+		await stateTracker.init([...definition.agents.keys()]);
 		const persistedResult: SingleResult = {
 			index: 0,
 			id: "persisted-worker",
@@ -210,8 +219,8 @@ swarm:
 			tokens: 0,
 			requests: 0,
 		};
-		await stateTracker.recordResult("worker", 0, 0, persistedResult);
-		await stateTracker.updatePipeline({ status: "failed", nextIteration: 0, completedAt: Date.now() });
+		await stateTracker.recordResult("worker", 0, persistedResult);
+		await stateTracker.updatePipeline({ status: "failed", completedAt: Date.now() });
 		const runSubprocessSpy = vi.spyOn(taskExecutor, "runSubprocess");
 
 		const result = await new PipelineController(definition, waves, stateTracker).run({
@@ -227,24 +236,80 @@ swarm:
 });
 
 describe("pipeline failure and cancellation semantics", () => {
-	it("skips dependent waves after a failed agent by default", async () => {
-		const definition = parseSwarm(`
-swarm:
-  name: skip-dependents
-  workspace: .
-  mode: parallel
-  agents:
-    root:
-      role: worker
-      task: fail
-    child:
-      role: worker
-      task: should not run
-      waits_for: [root]
-`);
+	it("uses the host task concurrency setting for a ready wave", async () => {
+		const definition = parseShortleash(
+			JSON.stringify({
+				swarm: {
+					name: "host-concurrency",
+					workspace: ".",
+					agents: {
+						first: { role: "worker", task: "first" },
+						second: { role: "worker", task: "second" },
+						third: { role: "worker", task: "third" },
+					},
+				},
+			}),
+		);
 		const waves = buildExecutionWaves(buildDependencyGraph(definition));
 		const stateTracker = new StateTracker(workspace, definition.name);
-		await stateTracker.init([...definition.agents.keys()], 1, definition.mode);
+		await stateTracker.init([...definition.agents.keys()]);
+		let active = 0;
+		let peak = 0;
+		let startedCount = 0;
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
+			active += 1;
+			peak = Math.max(peak, active);
+			startedCount += 1;
+			if (startedCount === 1) started.resolve();
+			await release.promise;
+			active -= 1;
+			return {
+				index: options.index,
+				id: options.id,
+				agent: options.agent.name,
+				agentSource: "project" as const,
+				task: options.task,
+				exitCode: 0,
+				output: "",
+				stderr: "",
+				truncated: false,
+				durationMs: 1,
+				tokens: 0,
+				requests: 0,
+			};
+		});
+
+		const run = new PipelineController(definition, waves, stateTracker).run({
+			workspace,
+			modelRegistry: {} as ModelRegistry,
+			settings: Settings.isolated({ "task.maxConcurrency": 1 }),
+		});
+		await started.promise;
+		expect(peak).toBe(1);
+		release.resolve();
+		const result = await run;
+
+		expect(result.status).toBe("completed");
+		expect(peak).toBe(1);
+	});
+	it("skips dependent waves after a failed agent by default", async () => {
+		const definition = parseShortleash(
+			JSON.stringify({
+				swarm: {
+					name: "skip-dependents",
+					workspace: ".",
+					agents: {
+						root: { role: "worker", task: "fail" },
+						child: { role: "worker", task: "should not run", waits_for: ["root"] },
+					},
+				},
+			}),
+		);
+		const waves = buildExecutionWaves(buildDependencyGraph(definition));
+		const stateTracker = new StateTracker(workspace, definition.name);
+		await stateTracker.init([...definition.agents.keys()]);
 		const calls: string[] = [];
 		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
 			const agentName = options.agent.name;
@@ -277,24 +342,22 @@ swarm:
 	});
 
 	it("continues independent and dependent waves when explicitly configured", async () => {
-		const definition = parseSwarm(`
-swarm:
-  name: continue-failures
-  workspace: .
-  mode: parallel
-  failure_policy: continue
-  agents:
-    root:
-      role: worker
-      task: fail
-    child:
-      role: worker
-      task: continue
-      waits_for: [root]
-`);
+		const definition = parseShortleash(
+			JSON.stringify({
+				swarm: {
+					name: "continue-failures",
+					workspace: ".",
+					failure_policy: "continue",
+					agents: {
+						root: { role: "worker", task: "fail" },
+						child: { role: "worker", task: "continue", waits_for: ["root"] },
+					},
+				},
+			}),
+		);
 		const waves = buildExecutionWaves(buildDependencyGraph(definition));
 		const stateTracker = new StateTracker(workspace, definition.name);
-		await stateTracker.init([...definition.agents.keys()], 1, definition.mode);
+		await stateTracker.init([...definition.agents.keys()]);
 		const calls: string[] = [];
 		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
 			calls.push(options.agent.name);
@@ -326,19 +389,20 @@ swarm:
 	});
 
 	it("marks a mid-wave cancellation as aborted instead of completed", async () => {
-		const definition = parseSwarm(`
-swarm:
-  name: abort
-  workspace: .
-  mode: parallel
-  agents:
-    worker:
-      role: worker
-      task: wait
-`);
+		const definition = parseShortleash(
+			JSON.stringify({
+				swarm: {
+					name: "abort",
+					workspace: ".",
+					agents: {
+						worker: { role: "worker", task: "wait" },
+					},
+				},
+			}),
+		);
 		const waves = buildExecutionWaves(buildDependencyGraph(definition));
 		const stateTracker = new StateTracker(workspace, definition.name);
-		await stateTracker.init(["worker"], 1, definition.mode);
+		await stateTracker.init(["worker"]);
 		const abortController = new AbortController();
 		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
 			abortController.abort();
@@ -371,21 +435,21 @@ swarm:
 	});
 });
 it("keeps cancellation terminal when completion evaluation returns", async () => {
-	const definition = parseSwarm(`
-swarm:
-  name: abort-during-completion
-  workspace: .
-  mode: parallel
-  checks:
-    - fixture:cancel-on-complete
-  agents:
-    worker:
-      role: worker
-      task: finish
-`);
+	const definition = parseShortleash(
+		JSON.stringify({
+			swarm: {
+				name: "abort-during-completion",
+				workspace: ".",
+				checks: [policyPath("cancel-on-complete")],
+				agents: {
+					worker: { role: "worker", task: "finish" },
+				},
+			},
+		}),
+	);
 	const waves = buildExecutionWaves(buildDependencyGraph(definition));
 	const stateTracker = new StateTracker(workspace, definition.name);
-	await stateTracker.init(["worker"], 1, definition.mode);
+	await stateTracker.init(["worker"]);
 	vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValue({
 		index: 0,
 		id: "worker-result",
@@ -402,20 +466,14 @@ swarm:
 	});
 
 	const abortController = new AbortController();
-	const policyRegistry = new SwarmPolicyRegistry();
-	policyRegistry.register({
-		name: "fixture",
-		checks: [
-			{
-				id: "cancel-on-complete",
-				description: "cancel after completion evaluation",
-				boundary: "complete",
-				check: () => {
-					abortController.abort();
-					return true;
-				},
-			},
-		],
+	const policyRegistry = new ShortleashPolicyRegistry();
+	policyRegistry.register(policyPath("cancel-on-complete"), {
+		description: "cancel after completion evaluation",
+		boundary: "complete",
+		check: () => {
+			abortController.abort();
+			return true;
+		},
 	});
 
 	const result = await new PipelineController(definition, waves, stateTracker).run({

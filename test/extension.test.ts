@@ -6,7 +6,7 @@ type Completion = { value: string; label: string; description?: string };
 type Command = { getArgumentCompletions?: (prefix: string) => Completion[] | null };
 
 const validShortleash = {
-	name: "fixture-swarm",
+	name: "fixture-shortleash",
 	workspace: ".",
 	agents: {
 		worker: { role: "worker", task: "Inspect the fixture." },
@@ -48,14 +48,14 @@ describe("Shortleash command completions", () => {
 	it("keeps subcommands and adds runnable open Shortleash Beads at the root", async () => {
 		const { command, calls } = loadCommand([
 			{
-				id: "open-swarm",
-				title: "Open swarm",
+				id: "open-shortleash",
+				title: "Open Shortleash",
 				status: "open",
 				metadata: { shortleash: validShortleash },
 			},
 			{
-				id: "closed-swarm",
-				title: "Closed swarm",
+				id: "closed-shortleash",
+				title: "Closed Shortleash",
 				status: "closed",
 				metadata: { shortleash: validShortleash },
 			},
@@ -66,8 +66,8 @@ describe("Shortleash command completions", () => {
 				metadata: { workflow: "implementation" },
 			},
 			{
-				id: "malformed-swarm",
-				title: "Malformed swarm",
+				id: "malformed-shortleash",
+				title: "Malformed Shortleash",
 				status: "open",
 				metadata: { shortleash: { workspace: "." } },
 			},
@@ -83,26 +83,26 @@ describe("Shortleash command completions", () => {
 			"reconcile",
 			"help",
 		]);
-		expect(suggestions?.find(item => item.value === "run issue://open-swarm")).toMatchObject({
-			label: "open-swarm — Open swarm",
-			description: "Run Shortleash 'fixture-swarm'",
+		expect(suggestions?.find(item => item.value === "run issue://open-shortleash")).toMatchObject({
+			label: "open-shortleash — Open Shortleash",
+			description: "Run Shortleash 'fixture-shortleash'",
 		});
-		expect(suggestions?.some(item => item.value.includes("closed-swarm"))).toBe(false);
+		expect(suggestions?.some(item => item.value.includes("closed-shortleash"))).toBe(false);
 		expect(suggestions?.some(item => item.value.includes("plain-task"))).toBe(false);
-		expect(suggestions?.some(item => item.value.includes("malformed-swarm"))).toBe(false);
+		expect(suggestions?.some(item => item.value.includes("malformed-shortleash"))).toBe(false);
 		expect(calls).toEqual([["list", "--status", "open", "--json"]]);
 	});
 
 	it("filters Bead suggestions after an input subcommand", async () => {
 		const { command } = loadCommand([
 			{
-				id: "alpha-swarm",
+				id: "alpha-shortleash",
 				title: "Alpha pipeline",
 				status: "open",
 				metadata: { shortleash: { ...validShortleash, name: "alpha" } },
 			},
 			{
-				id: "beta-swarm",
+				id: "beta-shortleash",
 				title: "Beta pipeline",
 				status: "open",
 				metadata: { shortleash: { ...validShortleash, name: "beta" } },
@@ -110,10 +110,10 @@ describe("Shortleash command completions", () => {
 		]);
 
 		expect((await complete(command, "run "))?.map(item => item.value)).toEqual([
-			"run issue://alpha-swarm",
-			"run issue://beta-swarm",
+			"run issue://alpha-shortleash",
+			"run issue://beta-shortleash",
 		]);
-		expect((await complete(command, "plan beta"))?.map(item => item.value)).toEqual(["plan issue://beta-swarm"]);
+		expect((await complete(command, "plan beta"))?.map(item => item.value)).toEqual(["plan issue://beta-shortleash"]);
 	});
 
 	it("falls back to existing subcommands when Beads is unavailable", async () => {

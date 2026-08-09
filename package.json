@@ -2,7 +2,7 @@
   "type": "module",
   "name": "shortleash",
   "version": "0.1.0",
-  "description": "Long-lived multi-agent orchestration extension and standalone runner for OMP",
+  "description": "Long-lived multi-agent orchestration extension for OMP",
   "homepage": "https://github.com/smallstepman/shortleash",
   "author": "Marcin Nowak Liebiediew <m.liebiediew@gmail.com>",
   "license": "MIT",
@@ -20,11 +20,8 @@
     "agent",
     "extension"
   ],
-  "bin": {
-    "omp-shortleash": "src/cli.ts"
-  },
   "scripts": {
-    "test": "bun test ./test/*.test.ts ./test/**/*.test.ts",
+    "test": "bun test ./test",
     "check": "biome check src test && bun run check:types",
     "check:types": "tsgo -p tsconfig.json --noEmit",
     "lint": "biome lint src test",
@@ -32,7 +29,6 @@
     "fmt": "biome format --write src test"
   },
   "dependencies": {
-    "@andrewjacop/pi-herdr": "^0.2.5",
     "@oh-my-pi/pi-utils": "^17.2.5",
     "@thi.ng/text-canvas": "^3.0.127",
     "d3-dag": "^1.2.2"
@@ -56,10 +52,6 @@
   },
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "import": "./src/index.ts"
-    },
-    "./plugin": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
     }

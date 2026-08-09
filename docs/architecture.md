@@ -1,60 +1,91 @@
-# Obligation-driven workflow runtime architecture
+# Shortleash architecture
 
-## Authority boundary
+Shortleash is a policy-enforced worker runner for a declared implementation graph. A definition names the workspace, agents, dependencies, and code-defined checks/evaluators. The runner executes the graph once, persists every agent attempt and policy decision, and optionally projects lifecycle notes to a Beads issue.
 
-The runtime journal is the protocol authority. A workflow state is reconstructed by reducing the ordered event stream in `.omp/workflow-journal/<bead>.jsonl`; the snapshot sidecar is an optimization only. The OMP conversation, a tool result, a test command, an evaluator paragraph, and a Beads status are inputs or projections, never authoritative state mutations.
+## Product boundary
 
-| Concern | Authority | Allowed mutation |
-| --- | --- | --- |
-| Workflow definition and legal stage graph | `defineWorkflow` result | Workflow author before execution |
-| Current stage, completion status, plan revision, obligations, evidence, evaluator results | `WorkflowRuntime` + `WorkflowJournal` | Validated runtime operations through committed events |
-| OMP reasoning and implementation plan proposal | One persistent OMP logical session | OMP proposes; runtime validates and records |
-| Operator-visible issue, status, notes, metadata | `BdCli` projection | Runtime projection/reconciliation only; manual edits are drift |
-| Evaluation claim | Declared evaluator contract | Evaluator returns schema-checked structured result |
-| Evidence | Immutable `EvidenceRef` event | `submitEvidence` records references; it does not assert acceptance |
-
-`src/workflow.ts` contains the core model and transition engine. It does not import OMP, Beads, or Gas City packages. `src/journal.ts` supplies memory and JSONL persistence through the `WorkflowJournal` port. `src/beads.ts` is an argv-based Beads CLI adapter. `src/omp-extension.ts` exposes runtime-owned structured operations through the documented extension factory shape. `src/cli.ts` provides `start`, `resume`, `inspect`, `evaluate`, and `reconcile` operator entrypoints.
-
-## Concepts kept separate
-
-- **Instruction:** guidance in an OMP prompt. It can explain the next action but cannot enforce it.
-- **Obligation:** a durable stateful requirement with provenance, blocking/advisory mode, affected transitions, required evidence, and resolution history.
-- **Invariant:** a property expected to hold for every reduced state. Current invariants include ordered event sequences, workflow identity/version, and plan coverage preservation.
-- **Transition guard:** a check executed against a requested transition. It can reject but cannot commit state directly.
-- **Evaluator:** a declared procedure that assesses claims against explicit evidence. Its result contains outcome, findings, explanation, evidence references, repository revision, and evaluator version.
-- **Evidence:** an immutable reference to an artifact, repository analysis, test result, decision, or operational observation. Evidence is not acceptance by itself.
-- **Capability:** a structured operation made available to OMP. Capabilities validate inputs and call the runtime; they do not expose direct state mutation.
-- **Milestone:** an externally meaningful plan or Beads projection boundary. Internal tool calls and journal events are not automatically Beads issues.
-
-## Event model
-
-Every event has an event ID, monotonic sequence, event type, timestamp, idempotency key, and structured payload. The initial event is `workflow_initialized`. Mutations use events such as:
-
-- `output_submitted`, `evidence_submitted`, `evaluation_recorded`;
-- `transition_rejected`, `transition_accepted`, `blocker_reported`;
-- `plan_proposed`, `plan_amended`, `decision_recorded`;
-- `obligation_created`, `obligation_updated`.
-
-Appending validates the next sequence and ignores a repeated event ID or idempotency key. Reduction is deterministic and rejects gaps or a journal whose first event is not initialization. Accepted transitions are committed only after declared requirements, guards, blocking obligations, and required evaluator results pass. Rejections remain durable history and do not advance the stage.
-
-## Plan integrity
-
-The OMP owns plan content, but the runtime owns plan history. `proposePlan` and `amendPlan` record a revision and explicit reason. An amendment must name the base revision and cannot remove an existing objective, milestone, or acceptance criterion. Adding a new objective or subsystem remains visible as a new plan revision and can be accompanied by a decision or obligation event; it is never a silent replacement.
-
-## Recovery and projection
-
-A new runtime instance loads the same journal and logical `sessionRef`, reduces all events, restores open obligations and failed evaluator results, and resumes at the recorded stage. It does not create a fresh task loop or hand the work to another agent. Each successful mutation projects compact stage, status, blocker, session, and artifact references to the attached Bead. `reconcile` reports differences; safe repair is explicit. If an operator closes an active projected Bead, reconciliation reports the divergence and does not convert that closure into workflow completion.
-
-## End-to-end contract
+The core workflow is:
 
 ```text
-OMP proposes structured operation
-  -> runtime validates input and loads journal state
-  -> guards, obligations, and evaluators run against declared evidence
-  -> runtime commits an idempotent authoritative event
-  -> reducer produces the next state and snapshot
-  -> Beads projection is updated
-  -> OMP receives structured result and current state
+JSON or metadata.shortleash
+  -> parse and normalize ShortleashDefinition
+  -> validate policy references and dependency graph
+  -> build topological execution waves
+  -> run each agent in its configured workspace
+  -> finalize agent output through checks/evaluators
+  -> send corrective findings to the same worker session when rejected
+  -> persist state and project lifecycle notes
 ```
 
-The reference tests exercise the critical path: durable initialization, obligation-blocked transition, evidence submission, evaluator failure, same-session correction, accepted transition, process-style recovery, and Beads projection drift.
+The graph is the execution plan. Agents with no dependencies form the initial wave; each later wave waits for its dependencies. In-wave concurrency follows the host's `task.maxConcurrency` setting. Explicit `waits_for` and `reports_to` relationships define the graph. Every configured graph runs once; corrective follow-up is an attempt on the same agent, not a second graph pass.
+
+The orchestration core does not require Beads:
+
+- `src/orchestration/definition/schema.ts` parses and normalizes the `swarm` configuration.
+- `src/orchestration/definition/plan.ts` resolves a file or `issue://` input, loads the referenced TypeScript policy modules, validates the graph, and produces waves.
+- `src/orchestration/execution/dag.ts` builds dependencies, detects cycles, and topologically sorts waves.
+- `src/orchestration/execution/pipeline.ts` coordinates waves, failure policy, policy boundaries, persistence, and projection.
+- `src/orchestration/execution/executor.ts` runs workers through the host subprocess API, supports optional history inheritance and worktree isolation, and performs same-session corrective turns.
+- `src/orchestration/execution/state.ts` owns the durable run state and run lock.
+
+The OMP extension is the adapter around that core. It provides the TUI dashboard, current-session execution for definitions without declared agents, and Beads claim hooks.
+
+## Authority and persistence
+
+`StateTracker`'s JSON snapshot is the authoritative persisted record for a Shortleash run. It lives at `<workspace>/.shortleash_<name>/state/pipeline.json` and contains:
+
+- definition hash, workspace, manifest, and run status;
+- per-agent status, wave, current attempt, bounded native-tool history, and errors;
+- result records keyed by agent and attempt;
+- policy decisions and before/after observations;
+- Beads projection attempts and their errors.
+
+Writes use a serialized temporary-file, `fsync`, rename, and directory-sync sequence. A `run.lock` records the process identity, definition hash, and workspace. A live lock is never stolen. A stale lock is recoverable only through explicit `--resume` or `--restart` handling.
+
+The `logs/` directory is supplemental operator history, not a second state machine:
+
+```text
+.shortleash_<name>/
+  run.lock
+  state/pipeline.json
+  logs/orchestrator.log
+  logs/<agent>.log
+  context/
+```
+
+Resume requires the persisted definition hash, workspace, and agent set to remain compatible. Successful result records are reused; failed or missing agents run again. `--restart` intentionally initializes a new run after the caller has chosen to start over. A completed run cannot be resumed.
+
+## Policy boundary
+
+Policies are direct JavaScript/TypeScript module contracts. Each path in `checks` or `evals` resolves relative to the definition file and must end in `.ts`; there is no separate plugin registry or discovery step. A check module default-exports `{ description, check }`. An evaluator module default-exports `{ version, description, evaluate }`. Use `{ path, params }` when a module needs scalar parameters.
+
+- A check returns `boolean` or `{ passed, message, findings, evidenceRefs }`.
+- An evaluator returns `{ outcome, explanation, findings, evidenceRefs }`; its declared `version` and `blocking` behavior are recorded with the decision.
+- Supported boundaries are `agent`, `wave`, and `complete`.
+- Agent policies run after an agent result is produced. A rejection is converted into corrective feedback and sent through the existing worker session; each follow-up result is persisted under its attempt number.
+- Wave and completion policies run after the corresponding graph boundary. A rejected blocking decision marks the run failed and remains in policy history.
+- Captures are optional before/after snapshots. They are evidence for the policy decision, not acceptance by themselves.
+
+The policy context includes the normalized definition, current workspace paths, boundary, optional wave/agent/attempt, reference parameters, latest results, historical results, and the durable `ShortleashState`. Policy code decides domain acceptance; the runtime supplies execution ordering, persistence, and blocking semantics.
+
+## Failure, recovery, and projection
+
+`failure_policy` controls graph failures:
+
+- `fail_fast` stops after the failing wave;
+- `continue` runs later waves and reports failures;
+- `skip_dependents` records dependent agents as skipped.
+
+A failed policy decision blocks completion regardless of a worker's exit message. The persisted state, not an agent's prose or a closed Beads issue, determines completion.
+
+For a Beads-backed input, `src/orchestration/adapters/beads.ts` reads `bd show <id> --json` and validates `metadata.shortleash` against the same definition schema. Lifecycle events are projected as idempotent notes such as `[shortleash:name] started: running`; the adapter does not close the issue or replace the authoritative state. `reconcile` reports a missing Bead or manual closure while the Shortleash state is non-terminal/non-completed as drift.
+
+The OMP extension registers `/shortleash run`, `plan`, `status`, `evaluate`, and `reconcile`, attaches the dashboard, handles Beads claim hooks, and keeps no-agent definitions in the current OMP session.
+
+## Deliberate non-goals
+
+Shortleash does not create a Beads child for every agent, treat prompt instructions as enforcement, or repeat an entire graph to simulate batch processing. Repeated or accumulative work should be represented explicitly in the task and its durable artifacts, or decomposed into separate tracker work items. Custom policy modules remain the differentiator; graph visualization and host adapters are optional presentation and execution layers.
+
+## Verification surface
+
+The repository tests cover definition parsing and metadata validation, dependency waves, state persistence and recovery, policy capture/evaluation, same-session corrective attempts, executor options, Beads projection/reconciliation, extension command handling, and TUI rendering.

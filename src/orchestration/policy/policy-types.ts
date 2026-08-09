@@ -1,24 +1,24 @@
 /** Shared policy result contracts used by the registry, pipeline, and durable state. */
 
-export type SwarmPolicyBoundary = "agent" | "wave" | "iteration" | "complete";
-export type SwarmPolicyKind = "check" | "eval";
+export type ShortleashPolicyBoundary = "agent" | "wave" | "complete";
+export type ShortleashPolicyKind = "check" | "eval";
 
-export interface SwarmPolicyObservation {
+export interface ShortleashPolicyObservation {
 	before: unknown;
 	after: unknown;
 }
 
-export type SwarmPolicyObservations = ReadonlyMap<string, SwarmPolicyObservation>;
+export type ShortleashPolicyObservations = ReadonlyMap<string, ShortleashPolicyObservation>;
 
-export interface SwarmPolicyFailure {
-	source: SwarmPolicyKind;
+export interface ShortleashPolicyFailure {
+	source: ShortleashPolicyKind;
 	id: string;
 	message: string;
 	findings: readonly unknown[];
 	evidenceRefs: readonly string[];
 }
 
-export interface SwarmEvaluationRecord {
+export interface ShortleashEvaluationRecord {
 	id: string;
 	version: string;
 	outcome: "pass" | "fail";
@@ -27,9 +27,9 @@ export interface SwarmEvaluationRecord {
 	evidenceRefs: readonly string[];
 }
 
-export interface SwarmPolicyDecision {
-	boundary: SwarmPolicyBoundary;
+export interface ShortleashPolicyDecision {
+	boundary: ShortleashPolicyBoundary;
 	accepted: boolean;
-	failures: readonly SwarmPolicyFailure[];
-	evaluations: readonly SwarmEvaluationRecord[];
+	failures: readonly ShortleashPolicyFailure[];
+	evaluations: readonly ShortleashEvaluationRecord[];
 }

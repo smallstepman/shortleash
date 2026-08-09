@@ -1,8 +1,8 @@
 ---
 name: shortleash
-description: Use Shortleash to design, run, inspect, evaluate, resume, and reconcile durable OMP multi-agent workflows. Apply when an engineering objective benefits from DAG dependencies, parallel or sequential agent waves, repeated pipeline iterations, structured policy checks or evaluators, Beads-backed execution, or restart-safe state.
+description: Use Shortleash to design, run, inspect, evaluate, resume, and reconcile durable OMP multi-agent workflows. Apply when an engineering objective benefits from DAG dependencies, dependency waves, bounded corrective attempts, structured policy checks or evaluators, Beads-backed execution, or restart-safe state.
 license: MIT
-compatibility: Requires the Shortleash extension in oh-my-pi; standalone execution requires Bun. Herdr is optional, and Beads-backed runs require a working bd installation plus valid metadata.shortleash.
+compatibility: Requires the Shortleash extension in oh-my-pi. Beads-backed runs require a working bd installation plus valid metadata.shortleash.
 metadata:
   package: "shortleash"
   format: agentskills
@@ -10,7 +10,7 @@ metadata:
 
 # Shortleash
 
-Shortleash is the OMP extension for durable multi-agent orchestration. It reads one JSON or YAML definition, validates the dependency graph and policy references, runs agents in dependency waves, persists results and policy decisions, and exposes recovery and reconciliation commands.
+Shortleash is the OMP extension for durable multi-agent orchestration. It reads one JSON definition, validates the dependency graph and policy references, runs agents in dependency waves, persists results and policy decisions, and exposes recovery and reconciliation commands.
 
 Treat the persisted Shortleash state as the authoritative execution record. A Beads issue is an external projection and coordination handle; a Bead being open or closed is not proof that the Shortleash run is accepted.
 
@@ -20,12 +20,12 @@ Use Shortleash when at least one of these is true:
 
 - independent work can run concurrently;
 - work has explicit dependencies that form a DAG;
-- a large objective needs repeated pipeline iterations;
+- a large objective needs one guarded graph run with corrective attempts;
 - deterministic checks or structured evaluators must block completion;
 - progress must survive an OMP, terminal, or host-process restart;
 - a meaningful Beads issue should expose the run without representing every internal activity.
 
-Do not create artificial agents for a small sequential edit. Use ordinary OMP execution when the work needs one uninterrupted context and has no useful wave boundary. Do not use Shortleash as a Ralph-style loop or as a substitute for a real acceptance/evaluation contract.
+Do not create artificial agents for a small linear edit. Use ordinary OMP execution when the work needs one uninterrupted context and has no useful wave boundary. Do not use Shortleash as a Ralph-style loop or as a substitute for a real acceptance/evaluation contract.
 
 ## Start safely
 
@@ -41,94 +41,78 @@ Do not create artificial agents for a small sequential edit. Use ordinary OMP ex
 3. Inspect the definition before running it:
 
    ```bash
-   omp-shortleash plan path/to/swarm.yaml --json
+   /shortleash plan path/to/shortleash.json
    ```
 
-   In an OMP TUI, use `/shortleash plan path/to/swarm.yaml` or `/shortleash inspect path/to/swarm.yaml`.
+   In an OMP TUI, use `/shortleash plan path/to/shortleash.json` or `/shortleash inspect path/to/shortleash.json`.
 4. Fix unknown fields, missing dependencies, policy reference errors, and cycles before starting. The parser rejects unknown keys and the removed `rules` and `must` fields; use `checks` and `evals` instead.
 
 ## Write a definition
 
-The file must contain a top-level `swarm` object. JSON and YAML use the same snake_case fields. `name` may contain letters, numbers, dots, underscores, and dashes. `workspace` is required and is resolved relative to the definition file (or the current directory for a Beads input).
+The file must contain a top-level `swarm` object. JSON uses snake_case fields. `name` may contain letters, numbers, dots, underscores, and dashes. `workspace` is required and is resolved relative to the definition file (or the current directory for a Beads input).
 
-```yaml
-swarm:
-  name: api-hardening
-  workspace: ./workspace
-  mode: pipeline                 # pipeline | parallel | sequential
-  agent_execution: subagents     # herdr | subagents; herdr is the default
-  failure_policy: skip_dependents # fail_fast | continue | skip_dependents
-  target_count: 2                # repeats the whole graph in pipeline mode
-  max_concurrency: 3
-  agent_timeout_ms: 3600000
-  model: claude-sonnet-4-5
-  isolation: none                # none | worktree
-  inherit_history: false
-  plugins:
-    - ./policies/architecture.ts
-  checks:
-    - architecture:boundary
-  evals:
-    - architecture:completion
+The `swarm` spelling is retained only as the format-level key; package APIs, commands, metadata, state paths, and policy module paths use **Shortleash**.
 
-  agents:
-    inspect:
-      role: investigator
-      task: Inspect the repository and record concrete implementation constraints.
-      reports_to: [implement]
-    implement:
-      role: implementer
-      task: Implement the approved change and leave deterministic evidence.
-      waits_for: [inspect]
-    verify:
-      role: verifier
-      task: Run focused verification and report failures with evidence references.
-      waits_for: [implement]
+```json
+{
+  "swarm": {
+    "name": "api-hardening",
+    "workspace": "./workspace",
+    "failure_policy": "skip_dependents",
+    "model": "claude-sonnet-4-5",
+    "isolation": "none",
+    "inherit_history": false,
+    "checks": ["./policies/architecture.ts"],
+    "evals": ["./policies/completion.ts"],
+    "agents": {
+      "inspect": {
+        "role": "investigator",
+        "task": "Inspect the repository and record concrete implementation constraints.",
+        "reports_to": ["implement"]
+      },
+      "implement": {
+        "role": "implementer",
+        "task": "Implement the approved change and leave deterministic evidence.",
+        "waits_for": ["inspect"]
+      },
+      "verify": {
+        "role": "verifier",
+        "task": "Run focused verification and report failures with evidence references.",
+        "waits_for": ["implement"]
+      }
+    }
+  }
+}
 ```
 
 ### Definition rules
 
-- `mode: pipeline` repeats the complete DAG `target_count` times. `parallel` and `sequential` support only one target iteration.
+- The runtime executes the configured dependency graph once. Agents with no dependencies form the initial wave; later waves wait for their dependencies. Agent-scoped policy rejections create bounded corrective attempts in the same worker session; they do not rerun the graph.
 - `waits_for` makes the named agents dependencies. If `A.reports_to` contains `B`, `B` also depends on `A`.
-- In `pipeline` or `sequential` mode, when no explicit dependency exists, declaration order becomes a chain. In `parallel` mode, independent agents share a wave.
 - Cycles, unknown dependency names, self-dependencies, and invalid policy references reject the plan before execution.
 - Every declared agent requires `role` and `task`. Optional fields are `extra_context`, `reports_to`, `waits_for`, `model`, `isolation`/`workspace_isolation`, `inherit_history`/`history`/`parent_history`, `checks`, and `evals`.
 - `failure_policy: fail_fast` stops after a failed wave; `continue` allows later work to run; `skip_dependents` (the default) marks downstream agents blocked by a failed dependency.
 - `workspace_isolation: worktree` uses the existing OMP isolation lifecycle and merges the captured patch. Use it only when concurrent changes must not share a working tree.
-- Parent-history inheritance requires an interactive OMP session. Standalone workers cannot inherit the parent conversation.
-- When `agents` is omitted, `task` describes work for the current OMP session. Run that form with `/shortleash run`; the standalone CLI has no current session and rejects direct definitions.
+- Parent-history inheritance requires an interactive OMP session.
+- When `agents` is omitted, `task` describes work for the current OMP session. Run that form with `/shortleash run`.
 
 ## Run and inspect
 
-Use the OMP TUI for direct current-session work or visible Herdr runs:
+Use the OMP TUI for direct current-session work or declared-agent runs with the dashboard:
 
 ```text
-/shortleash run path/to/swarm.yaml
-/shortleash run path/to/swarm.yaml --resume
-/shortleash run path/to/swarm.yaml --restart
+/shortleash run path/to/shortleash.json
+/shortleash run path/to/shortleash.json --resume
+/shortleash run path/to/shortleash.json --restart
 /shortleash status api-hardening
-/shortleash evaluate path/to/swarm.yaml --json
+/shortleash evaluate path/to/shortleash.json --json
 /shortleash reconcile issue://beads-id --json
 ```
 
-Use the standalone Bun CLI for definitions with declared agents:
-
-```bash
-omp-shortleash path/to/swarm.yaml
-omp-shortleash path/to/swarm.yaml --resume
-omp-shortleash plan path/to/swarm.yaml --json
-omp-shortleash status api-hardening --json
-omp-shortleash evaluate path/to/swarm.yaml --json
-omp-shortleash reconcile issue://beads-id --json
-omp-shortleash dashboard path/to/swarm.yaml
-```
-
-`--resume` and `--restart` are mutually exclusive. Do not use `--restart` to bypass an evaluation failure; correct the cause and resume the same logical run.
-
-The state directory is `.swarm_<name>/` under the resolved workspace:
+The state directory is `.shortleash_<name>/` under the resolved workspace:
 
 ```text
-.swarm_<name>/
+.shortleash_<name>/
   state/pipeline.json       # durable status, results, policy history, projections
   logs/orchestrator.log     # wave and lifecycle events
   logs/<agent>.log          # per-agent attempts and errors
@@ -142,62 +126,67 @@ Inspect `pipeline.json` and the logs when a run fails. Do not delete a valid loc
 
 Policies are executable runtime contracts, not prompt instructions.
 
-- A check returns `boolean` or `{ passed, message?, findings?, evidenceRefs? }`.
-- An evaluator declares `id`, `version`, and `description`, then returns `{ outcome: "pass" | "fail", explanation, findings?, evidenceRefs? }`.
+- A check module default-exports `{ description, check }` and may include `boundary` and `capture`. The check returns `boolean` or `{ passed, message?, findings?, evidenceRefs? }`.
+- An evaluator module default-exports `{ version, description, evaluate }` and may include `boundary`, `blocking`, and `capture`. The evaluator returns `{ outcome: "pass" | "fail", explanation, findings?, evidenceRefs? }`.
 - A failed check blocks its boundary. A failed evaluator blocks by default; set `blocking: false` only for explicitly advisory findings.
 - Results are structured and persisted with the boundary, evaluator version, findings, and evidence references. A prose paragraph alone is not an evaluator result.
 - Optional `capture(context)` functions can record before/after observations. Those observations are persisted and supplied to the corresponding evaluation.
-- Boundaries are `agent`, `wave`, `iteration`, and `complete`. A policy with no explicit boundary defaults to `agent` for agent-scoped references and `complete` for top-level references; set `boundary` explicitly when placement matters.
+- Boundaries are `agent`, `wave`, and `complete`. A policy with no explicit boundary defaults to `agent` for agent-scoped references and `complete` for top-level references; set `boundary` explicitly when placement matters.
 - Top-level checks and evaluators are inherited by declared agents as applicable. Agent-scoped failures can return corrective feedback to the same worker; a later successful attempt does not erase the rejected result from policy history.
 
-A code-defined plugin uses the public package API:
+Each `checks` or `evals` entry is a path to one `.ts` module, resolved relative to the definition file. Use an object when the module needs scalar parameters:
+
+```json
+{
+  "checks": [
+    "./policies/architecture.ts",
+    {
+      "path": "./policies/changed-files.ts",
+      "params": {
+        "extension": ".rs",
+        "minimum": 3,
+        "strict": true
+      }
+    }
+  ],
+  "evals": ["./policies/completion.ts"]
+}
+```
+
+Check module:
 
 ```ts
-import { defineSwarmPlugin } from "shortleash/plugin";
+import type { ShortleashCheckModule } from "shortleash";
 
-export default defineSwarmPlugin({
-  name: "architecture",
-  setup(api) {
-    api.registerCheck({
-      id: "boundary",
-      description: "The declared module boundary is preserved.",
-      boundary: "complete",
-      check: async ({ workspace }) => ({
-        passed: await Bun.file(`${workspace}/ARCHITECTURE.md`).exists(),
-        message: "ARCHITECTURE.md is required.",
-        evidenceRefs: [`workspace://${workspace}/ARCHITECTURE.md`],
-      }),
-    });
-
-    api.registerEval({
-      id: "completion",
-      version: "1",
-      description: "Completion evidence is present.",
-      boundary: "complete",
-      evaluate: ({ latestResults }) => ({
-        outcome: latestResults.size > 0 ? "pass" : "fail",
-        explanation: "At least one worker result must be available.",
-        evidenceRefs: ["state://latest-results"],
-      }),
-    });
-  },
-});
+export default {
+  description: "The declared module boundary is preserved.",
+  boundary: "complete",
+  check: async ({ workspace }) => ({
+    passed: await Bun.file(`${workspace}/ARCHITECTURE.md`).exists(),
+    message: "ARCHITECTURE.md is required.",
+    evidenceRefs: [`workspace://${workspace}/ARCHITECTURE.md`],
+  }),
+} satisfies ShortleashCheckModule;
 ```
 
-Reference policies as `plugin:id` or with scalar parameters such as `plugin:id::threshold=3::strict=true`. The object form is also valid:
+Evaluator module:
 
-```yaml
-checks:
-  - plugin: architecture
-    id: boundary
-    params:
-      required_file: ARCHITECTURE.md
+```ts
+import type { ShortleashEvaluationModule } from "shortleash";
+
+export default {
+  version: "1",
+  description: "Completion evidence is present.",
+  boundary: "complete",
+  evaluate: ({ latestResults }) => ({
+    outcome: latestResults.size > 0 ? "pass" : "fail",
+    explanation: "At least one worker result must be available.",
+    evidenceRefs: ["state://latest-results"],
+  }),
+} satisfies ShortleashEvaluationModule;
 ```
 
-Keep policy code deterministic where possible. Make findings actionable, attach stable evidence references, and ensure the evaluator checks the repository revision and artifacts it claims to assess.
-
-Plugin paths may be configured in `swarm.plugins`. Shortleash also discovers project plugins under `.omp/swarm` and `.swarm/plugins`, configured paths relative to the definition directory, and enabled installed-plugin manifest entries.
-
+Keep policy code deterministic where possible. Make findings actionable, attach stable evidence references, and ensure the evaluator checks the repository revision and artifacts it claims to assess. The parser rejects non-`.ts` paths and unknown reference fields; there is no separate plugin list or discovery search.
 ## Use Beads as a projection
 
 A Beads-backed input stores the same definition under `metadata.shortleash`; it is not a separate compact schema:
@@ -207,8 +196,6 @@ A Beads-backed input stores the same definition under `metadata.shortleash`; it 
   "shortleash": {
     "name": "api-hardening",
     "workspace": ".",
-    "mode": "sequential",
-    "agent_execution": "subagents",
     "agents": {
       "inspect": {
         "role": "investigator",
@@ -223,17 +210,15 @@ A Beads-backed input stores the same definition under `metadata.shortleash`; it 
 Run it with a bare Beads ID or an issue reference:
 
 ```bash
-omp-shortleash issue-id
-omp-shortleash issue://issue-id
 /shortleash run issue://issue-id
 ```
 
-The adapter reads `bd show <id> --json`, validates `metadata.shortleash`, and projects lifecycle notes such as `[swarm:name] started: running` or `[swarm:name] completed: completed`. It preserves existing notes and does not close the Bead. Use Beads for meaningful milestones, blockers, decisions, and discovered external work—not for every worker attempt.
+The adapter reads `bd show <id> --json`, validates `metadata.shortleash`, and projects lifecycle notes such as `[shortleash:name] started: running` or `[shortleash:name] completed: completed`. It preserves existing notes and does not close the Bead. Use Beads for meaningful milestones, blockers, decisions, and discovered external work—not for every worker attempt.
 
 A manually closed, missing, or otherwise divergent Bead is drift. Reconcile it explicitly:
 
 ```bash
-omp-shortleash reconcile issue://issue-id --json
+/shortleash reconcile issue://issue-id --json
 ```
 
 A reconciliation warning must not be converted into a successful workflow result. The Shortleash state and policy decision remain authoritative.
@@ -243,8 +228,8 @@ A reconciliation warning must not be converted into a successful workflow result
 After a host or process restart:
 
 1. Reuse the same definition path, `swarm.name`, workspace, and Beads reference.
-2. Run `--resume` (or `/shortleash run ... --resume`).
-3. Confirm the definition hash, workspace, mode, target count, and agent set still match. Shortleash refuses incompatible resumes.
+2. Run `/shortleash run ... --resume`.
+3. Confirm the definition hash, workspace, and agent set still match. Shortleash refuses incompatible resumes.
 4. Inspect `state/pipeline.json`, `policyHistory`, `projectionHistory`, and logs.
 5. If the evaluator blocked progress, fix the repository or policy evidence and resume. The failed decision remains in history.
 6. Use `--restart` only when intentionally beginning a new execution after accepting the loss of the prior unfinished run's continuation point.
@@ -263,4 +248,4 @@ Before reporting success, verify all of the following:
 - For Beads input, `reconcile ... --json` reports no projection drift.
 - If recovery was part of the objective, a real restart followed by `--resume` succeeded with the same logical run.
 
-When a policy blocks completion, report the blocking policy ID, version, findings, and evidence references; do not claim completion from an agent message or a closed Bead alone.
+When a policy blocks completion, report the blocking module path, evaluator version (when applicable), findings, and evidence references; do not claim completion from an agent message or a closed Bead alone.
