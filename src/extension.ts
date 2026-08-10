@@ -18,20 +18,28 @@ import {
 	type ShortleashBeadsProjector,
 	type ShortleashProjectionEvent,
 } from "./orchestration/adapters/beads";
+import { compileShortleashToGasCity, type GasCityWorkflowResult } from "./orchestration/adapters/gascity";
 import { createShortleashRunManifest } from "./orchestration/definition/manifest";
 import { hasShortleashMetadata, validateShortleashMetadata } from "./orchestration/definition/metadata";
 import { formatShortleashPlan, resolveShortleashPlan, type ShortleashPlan } from "./orchestration/definition/plan";
 import { fingerprintShortleashDefinition, type ShortleashDefinition } from "./orchestration/definition/schema";
 import { type ClaimedShortleashResult, runClaimedShortleash } from "./orchestration/execution/auto";
-import { executeDirectShortleash } from "./orchestration/execution/executor";
+import { createShortleashPolicyJudge, executeDirectShortleash } from "./orchestration/execution/executor";
+
 import { PipelineController, type PipelineResult } from "./orchestration/execution/pipeline";
 import { StateTracker } from "./orchestration/execution/state";
+import {
+	captureShortleashPolicyBoundaries,
+	combineShortleashPolicyDecisions,
+	finalizeShortleashPolicyBoundaries,
+	formatShortleashPolicyFeedback,
+} from "./orchestration/policy/finalization";
 import type {
 	ShortleashPolicyContext,
-	ShortleashPolicyDecision,
-	ShortleashPolicyObservations,
+	ShortleashPolicyJudge,
 	ShortleashPolicyRegistry,
 } from "./orchestration/policy/policies";
+
 import { attachShortleashDashboard } from "./orchestration/presentation/dashboard";
 import { renderShortleashProgress } from "./orchestration/presentation/render";
 
@@ -42,6 +50,8 @@ interface DirectShortleashRun {
 	cwd: string;
 	stateTracker: StateTracker;
 	policyRegistry: ShortleashPolicyRegistry;
+	policyJudge: ShortleashPolicyJudge;
+
 	beadsProjector?: ShortleashBeadsProjector;
 	attempt: number;
 	before: ReadonlyMap<string, unknown>;
@@ -78,7 +88,13 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 				signal,
 				directRunner: async (plan, runOptions) => {
 					if (signal.aborted) throw signal.reason;
-					await startDirectShortleash(plan, ctx, pi, { resume: false, restart: runOptions.restart }, directRuns);
+					await startDirectShortleash(
+						plan,
+						ctx,
+						pi,
+						{ resume: false, restart: runOptions.restart, gasCity: false },
+						directRuns,
+					);
 					return {
 						status: "not-started",
 						shortleashName: plan.definition.name,
@@ -103,7 +119,7 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 					const definitionPath = parts[1];
 					if (!definitionPath) {
 						ctx.ui.notify(
-							"Usage: /shortleash run <path/to/pipeline.json|issue-id> [--resume|--restart]",
+							"Usage: /shortleash run <path/to/pipeline.json|issue-id> [--resume|--restart] [--gascity] [--gascity-target <target>]",
 							"error",
 						);
 						return;
@@ -138,7 +154,7 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 				}
 				case "reconcile": {
 					if (!parts[1]) {
-						ctx.ui.notify("Usage: /shortleash reconcile <path/to/pipeline.json|issue-id>", "error");
+						ctx.ui.notify("Usage: /shortleash reconcile <path.json|issue-id>", "error");
 						return;
 					}
 					await handleReconcile(parts[1], ctx, pi, parts.includes("--json"));
@@ -148,11 +164,12 @@ export default function shortleashExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify(
 						[
 							"Shortleash — multi-agent pipeline orchestrator",
-							"  /shortleash run <path.json|issue-id> [--resume|--restart]  Run a pipeline",
-							"  /shortleash plan <path.json|issue-id>                       Validate and inspect a pipeline",
-							"  /shortleash status <name> [--json]                             Show persisted status",
-							"  /shortleash evaluate <path.json|issue-id> [--json]        Run persisted policy evaluators",
-							"  /shortleash reconcile <path.json|issue-id> [--json]       Detect Beads projection drift",
+							"  /shortleash run <path.json|issue-id> [--resume|--restart] [--gascity] [--gascity-target <target>]  Run a pipeline",
+							"  /shortleash plan <path.json|issue-id>                                 Validate and inspect a pipeline",
+							"  /shortleash status <name> [--json]                                   Show persisted status",
+							"  /shortleash evaluate <path.json|issue-id> [--json]                  Run persisted policy evaluators",
+							"  /shortleash reconcile <path.json|issue-id> [--json]                 Detect Beads projection drift",
+							"  Gas City mode compiles a v2 formula, cooks it, and attaches issue inputs without starting a second local scheduler.",
 							"  Dashboard: Esc closes it; c cancels the active run",
 						].join("\n"),
 						"info",
@@ -297,7 +314,7 @@ async function startDirectShortleash(
 			{ definitionHash, workspace },
 			{ allowStaleRecovery: runOptions.resume || runOptions.restart },
 		);
-		await stateTracker.init([], {
+		await stateTracker.init(["current"], {
 			definitionHash,
 			workspace,
 			definitionPath,
@@ -310,6 +327,10 @@ async function startDirectShortleash(
 		throw error;
 	}
 
+	const parentMessages = ctx.sessionManager
+		.getBranch()
+		.flatMap(entry => (entry.type === "message" ? [entry.message] : []));
+
 	const run: DirectShortleashRun = {
 		sessionId,
 		definition,
@@ -317,11 +338,21 @@ async function startDirectShortleash(
 		cwd: ctx.cwd,
 		stateTracker,
 		policyRegistry,
+		policyJudge: createShortleashPolicyJudge({
+			workspace,
+			shortleashDir: stateTracker.shortleashDir,
+			shortleashName: definition.name,
+			modelRegistry: ctx.modelRegistry,
+			settings: pi.pi.settings,
+			parentMessages,
+		}),
+
 		beadsProjector: plan.source.beadId ? createShortleashBeadsProjector(plan.source.beadId, ctx.cwd) : undefined,
 		attempt: nextDirectAttempt(stateTracker.state),
 		before: new Map(),
 		processing: false,
 	};
+
 	directRuns.set(sessionId, run);
 	try {
 		await projectDirectRun(run, {
@@ -358,27 +389,21 @@ async function finalizeDirectShortleash(
 	await run.stateTracker.recordResult("current", attempt, result);
 	const latestResults = new Map<string, SingleResult>([["current", result]]);
 	const history = directHistory(run.stateTracker.state);
-	const after = await captureDirectPolicies(run, "after", latestResults, history);
-	await run.stateTracker.recordPolicyObservations("current", attempt, "after", after);
-	const observations: ShortleashPolicyObservations = new Map(
-		[...new Set([...run.before.keys(), ...after.keys()])].map(key => [
-			key,
-			{ before: run.before.get(key), after: after.get(key) },
-		]),
-	);
-	const agentDecision = await run.policyRegistry.evaluate(
-		run.definition,
-		directPolicyContext(run, "agent", latestResults, history, "current"),
-		run.definition,
-		observations,
-	);
-	const completeDecision = await run.policyRegistry.evaluate(
-		run.definition,
-		directPolicyContext(run, "complete", latestResults, history),
-		run.definition,
-		observations,
-	);
-	const decision = combineDirectDecisions(agentDecision, completeDecision);
+	const finalization = await finalizeShortleashPolicyBoundaries(run.policyRegistry, run.definition, [
+		{
+			context: directPolicyContext(run, "agent", latestResults, history, "current"),
+			references: run.definition,
+			before: run.before,
+		},
+		{
+			context: directPolicyContext(run, "complete", latestResults, history),
+			references: run.definition,
+			before: run.before,
+		},
+	]);
+	await run.stateTracker.recordPolicyObservations("current", attempt, "after", finalization.after);
+	const [agentFinalization, completeFinalization] = finalization.boundaries;
+	const decision = combineShortleashPolicyDecisions([agentFinalization.decision, completeFinalization.decision]);
 	await run.stateTracker.updatePolicy(decision, { agent: "current" });
 
 	if (decision.accepted) {
@@ -418,7 +443,14 @@ async function finalizeDirectShortleash(
 	run.attempt = attempt + 1;
 	run.before = await captureDirectPolicies(run, "before", latestResults, history);
 	await run.stateTracker.recordPolicyObservations("current", run.attempt, "before", run.before);
-	pi.sendUserMessage(formatDirectPolicyFeedback(decision), { deliverAs: "followUp" });
+	pi.sendUserMessage(
+		formatShortleashPolicyFeedback(
+			decision,
+			"The Shortleash runtime rejected the current-session finalization.",
+			"Continue in this same OMP session and resolve every reported policy failure before finishing again.",
+		),
+		{ deliverAs: "followUp" },
+	);
 }
 
 async function captureDirectPolicies(
@@ -427,15 +459,16 @@ async function captureDirectPolicies(
 	latestResults: ReadonlyMap<string, SingleResult>,
 	history: ReadonlyMap<string, readonly SingleResult[]>,
 ): Promise<ReadonlyMap<string, unknown>> {
-	const snapshots = new Map<string, unknown>();
-	for (const context of [
-		directPolicyContext(run, "agent", latestResults, history, "current"),
-		directPolicyContext(run, "complete", latestResults, history),
-	]) {
-		const captured = await run.policyRegistry.capture(run.definition, context, phase, run.definition);
-		for (const [key, value] of captured) snapshots.set(key, value);
-	}
-	return snapshots;
+	return captureShortleashPolicyBoundaries(run.policyRegistry, run.definition, phase, [
+		{
+			context: directPolicyContext(run, "agent", latestResults, history, "current"),
+			references: run.definition,
+		},
+		{
+			context: directPolicyContext(run, "complete", latestResults, history),
+			references: run.definition,
+		},
+	]);
 }
 
 function directPolicyContext(
@@ -456,6 +489,7 @@ function directPolicyContext(
 		latestResults,
 		history,
 		state: run.stateTracker.state,
+		judge: run.policyJudge,
 	};
 	if (agent !== undefined) context.agent = agent;
 	return context;
@@ -491,19 +525,6 @@ async function projectDirectRun(run: DirectShortleashRun, event: ShortleashProje
 	}
 }
 
-function combineDirectDecisions(
-	agent: ShortleashPolicyDecision,
-	complete: ShortleashPolicyDecision,
-): ShortleashPolicyDecision {
-	const hasCompletePolicies = complete.failures.length > 0 || complete.evaluations.length > 0;
-	return {
-		boundary: hasCompletePolicies ? "complete" : agent.boundary,
-		accepted: agent.accepted && complete.accepted,
-		failures: [...agent.failures, ...complete.failures],
-		evaluations: [...agent.evaluations, ...complete.evaluations],
-	};
-}
-
 function directResult(run: DirectShortleashRun, messages: AgentMessage[]): SingleResult {
 	const assistant = [...messages].reverse().find(message => message.role === "assistant");
 	return {
@@ -535,15 +556,6 @@ function agentMessageText(message: AgentMessage): string {
 		.join("\n");
 }
 
-function formatDirectPolicyFeedback(decision: ShortleashPolicyDecision): string {
-	const failures = decision.failures.map(failure => `- ${failure.source} ${failure.id}: ${failure.message}`);
-	return [
-		"The Shortleash runtime rejected the current-session finalization.",
-		"Continue in this same OMP session and resolve every reported policy failure before finishing again.",
-		...failures,
-	].join("\n");
-}
-
 // ============================================================================
 // /shortleash run
 // ============================================================================
@@ -551,15 +563,37 @@ function formatDirectPolicyFeedback(decision: ShortleashPolicyDecision): string 
 interface ShortleashRunOptions {
 	resume: boolean;
 	restart: boolean;
+	gasCity: boolean;
+	gasCityTarget?: string;
 }
 
 function parseRunOptions(args: string[]): ShortleashRunOptions {
+	let gasCityTarget: string | undefined;
+	const unknown: string[] = [];
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		if (arg === "--resume" || arg === "--restart" || arg === "--gascity" || arg === "--backend=gascity") continue;
+		if (arg === "--gascity-target") {
+			const value = args[index + 1];
+			if (!value || value.startsWith("--")) throw new Error("--gascity-target requires a target.");
+			gasCityTarget = value;
+			index += 1;
+			continue;
+		}
+		if (arg.startsWith("--gascity-target=")) {
+			const value = arg.slice("--gascity-target=".length).trim();
+			if (!value) throw new Error("--gascity-target requires a target.");
+			gasCityTarget = value;
+			continue;
+		}
+		unknown.push(arg);
+	}
 	const resume = args.includes("--resume");
 	const restart = args.includes("--restart");
+	const gasCity = args.includes("--gascity") || args.includes("--backend=gascity");
 	if (resume && restart) throw new Error("--resume and --restart cannot be used together.");
-	const unknown = args.filter(arg => arg !== "--resume" && arg !== "--restart");
 	if (unknown.length > 0) throw new Error(`Unknown shortleash run option '${unknown[0]}'.`);
-	return { resume, restart };
+	return { resume, restart, gasCity, gasCityTarget };
 }
 
 async function handleRun(
@@ -577,6 +611,10 @@ async function handleRun(
 			`Cannot prepare shortleash '${input}': ${err instanceof Error ? err.message : String(err)}`,
 			"error",
 		);
+		return;
+	}
+	if (runOptions.gasCity) {
+		await handleGasCityRun(plan, ctx, pi, runOptions);
 		return;
 	}
 	const { definition: def, workspace, waves, definitionPath, policyPaths, policyRegistry } = plan;
@@ -648,6 +686,16 @@ async function handleRun(
 	const parentMessages = ctx.sessionManager
 		.getBranch()
 		.flatMap(entry => (entry.type === "message" ? [entry.message] : []));
+	const policyJudge = createShortleashPolicyJudge({
+		workspace,
+		shortleashDir: stateTracker.shortleashDir,
+		shortleashName: def.name,
+		modelRegistry: ctx.modelRegistry,
+		settings: pi.pi.settings,
+		parentMessages,
+		signal: runAbortController.signal,
+	});
+
 	try {
 		result = await controller.run({
 			workspace,
@@ -658,6 +706,7 @@ async function handleRun(
 			modelRegistry: ctx.modelRegistry,
 			settings: pi.pi.settings,
 			parentMessages,
+			policyJudge,
 			policyRegistry,
 			beadsProjector,
 		});
@@ -704,6 +753,69 @@ async function handleRun(
 		{ triggerTurn: false },
 	);
 }
+async function handleGasCityRun(
+	plan: ShortleashPlan,
+	ctx: ExtensionCommandContext,
+	pi: ExtensionAPI,
+	runOptions: ShortleashRunOptions,
+): Promise<void> {
+	try {
+		const result = await compileShortleashToGasCity(plan, {
+			cwd: ctx.cwd,
+			resume: runOptions.resume,
+			restart: runOptions.restart,
+			routeTarget: runOptions.gasCityTarget ?? "omp",
+		});
+		const lines = formatGasCityRunResult(plan, result);
+		if (runOptions.resume) {
+			lines.push("Gas City reused the persisted workflow when available; no duplicate workflow was created.");
+		}
+		ctx.ui.notify(lines.join("\n"), "info");
+		pi.sendMessage(
+			{
+				customType: "shortleash-gascity-result",
+				content: [{ type: "text", text: lines.join("\n") }],
+				display: true,
+				details: {
+					shortleashName: plan.definition.name,
+					formulaName: result.formulaName,
+					rootId: result.rootId,
+					attachBeadId: result.attachBeadId,
+					bridgeBeadId: result.bridgeBeadId,
+				},
+			},
+			{ triggerTurn: false },
+		);
+	} catch (error) {
+		ctx.ui.notify(
+			`Cannot start Gas City workflow '${plan.definition.name}': ${error instanceof Error ? error.message : String(error)}`,
+			"error",
+		);
+	}
+}
+
+function formatGasCityRunResult(plan: ShortleashPlan, result: GasCityWorkflowResult): string[] {
+	return [
+		`Gas City workflow '${plan.definition.name}' materialized.`,
+		`Formula: ${result.formulaName}`,
+		`Root bead: ${result.rootId}`,
+		`Created beads: ${result.created}`,
+		...(result.attachBeadId
+			? [`Attached to: ${result.attachBeadId}`]
+			: ["Attached to: none (use gc sling or attach the workflow root manually)."]),
+		...(result.bridgeBeadId ? [`Epic bridge bead: ${result.bridgeBeadId}`] : []),
+		...(result.routedTo
+			? [`Routed to: ${result.routedTo}`]
+			: ["Routed to: none (the workflow will remain pending until its root is routed)."]),
+		`Runtime artifacts: ${result.runtimePath}`,
+		`Definition hash: ${result.definitionHash}`,
+		`Policy bundle hash: ${result.policyBundleHash}`,
+		...result.warnings.map(warning => `Warning: ${warning}`),
+		...(result.routedTo
+			? ["Gas City owns scheduling, worker sessions, retries, and workflow state."]
+			: [`Route the root with 'gc sling <target> ${result.rootId} --no-formula' so Gas City can schedule it.`]),
+	];
+}
 
 // ============================================================================
 // /shortleash plan, status, evaluate, and reconcile
@@ -749,7 +861,7 @@ async function handleStatus(name: string | undefined, ctx: ExtensionCommandConte
 async function handleEvaluate(
 	input: string,
 	ctx: ExtensionCommandContext,
-	_pi: ExtensionAPI,
+	pi: ExtensionAPI,
 	json: boolean,
 ): Promise<void> {
 	try {
@@ -772,6 +884,18 @@ async function handleEvaluate(
 				const latest = results.at(-1);
 				if (latest) latestResults.set(agentName, latest);
 			}
+			const parentMessages = ctx.sessionManager
+				.getBranch()
+				.flatMap(entry => (entry.type === "message" ? [entry.message] : []));
+
+			const policyJudge = createShortleashPolicyJudge({
+				workspace: plan.workspace,
+				shortleashDir: stateTracker.shortleashDir,
+				shortleashName: plan.definition.name,
+				modelRegistry: ctx.modelRegistry,
+				settings: pi.pi.settings,
+				parentMessages,
+			});
 			const decision = await plan.policyRegistry.evaluate(plan.definition, {
 				definition: plan.definition,
 				cwd: ctx.cwd,
@@ -782,6 +906,7 @@ async function handleEvaluate(
 				latestResults,
 				history,
 				state,
+				judge: policyJudge,
 			});
 			await stateTracker.updatePolicy(decision);
 			const message = json

@@ -14,7 +14,7 @@ describe("Shortleash dashboard lifecycle", () => {
 		try {
 			const definition = parseShortleash(
 				JSON.stringify({
-					swarm: {
+					shortleash: {
 						name: "dashboard-ui",
 						workspace,
 						agents: {

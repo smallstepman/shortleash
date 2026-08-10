@@ -6,7 +6,7 @@ import {
 } from "../../../src/orchestration/definition/schema";
 
 const jsonDefinition = JSON.stringify({
-	swarm: {
+	shortleash: {
 		name: "format-equivalence",
 		workspace: "./workspace",
 		model: "default-model",
@@ -43,8 +43,17 @@ describe("Shortleash definition JSON", () => {
 		);
 	});
 
+	it("accepts the legacy swarm definition key", () => {
+		const definition = parseShortleash(
+			JSON.stringify({
+				swarm: { name: "legacy-format", workspace: "." },
+			}),
+		);
+		expect(definition.name).toBe("legacy-format");
+	});
+
 	it("rejects non-JSON definitions", () => {
-		expect(() => parseShortleash("swarm:\n  name: invalid\n  workspace: .")).toThrow("must be valid JSON");
+		expect(() => parseShortleash("shortleash:\n  name: invalid\n  workspace: .")).toThrow("must be valid JSON");
 	});
 
 	it("rejects empty definitions with a format-independent error", () => {
@@ -54,19 +63,19 @@ describe("Shortleash definition JSON", () => {
 		expect(() =>
 			parseShortleash(
 				JSON.stringify({
-					swarm: {
+					shortleash: {
 						name: "unknown-field",
 						workspace: ".",
 						unexpected: true,
 					},
 				}),
 			),
-		).toThrow("swarm.unexpected is not allowed");
+		).toThrow("shortleash.unexpected is not allowed");
 
 		expect(() =>
 			parseShortleash(
 				JSON.stringify({
-					swarm: {
+					shortleash: {
 						name: "unknown-agent-field",
 						workspace: ".",
 						agents: {
@@ -75,20 +84,20 @@ describe("Shortleash definition JSON", () => {
 					},
 				}),
 			),
-		).toThrow("swarm.agents.worker.unexpected is not allowed");
+		).toThrow("shortleash.agents.worker.unexpected is not allowed");
 	});
 	it("rejects the removed separate plugin registry field", () => {
 		expect(() =>
 			parseShortleash(
 				JSON.stringify({
-					swarm: {
+					shortleash: {
 						name: "removed-plugin-registry",
 						workspace: ".",
 						plugins: ["./policies.ts"],
 					},
 				}),
 			),
-		).toThrow("swarm.plugins is not allowed");
+		).toThrow("shortleash.plugins is not allowed");
 	});
 
 	it("rejects removed scheduling and budget configuration", () => {
@@ -103,14 +112,14 @@ describe("Shortleash definition JSON", () => {
 			expect(() =>
 				parseShortleash(
 					JSON.stringify({
-						swarm: {
+						shortleash: {
 							name: `removed-${field}`,
 							workspace: ".",
 							[field]: value,
 						},
 					}),
 				),
-			).toThrow(`swarm.${field} is not allowed`);
+			).toThrow(`shortleash.${field} is not allowed`);
 		}
 	});
 
@@ -118,7 +127,7 @@ describe("Shortleash definition JSON", () => {
 		expect(() =>
 			parseShortleash(
 				JSON.stringify({
-					swarm: {
+					shortleash: {
 						name: "invalid-relationships",
 						workspace: ".",
 						agents: {
@@ -127,13 +136,13 @@ describe("Shortleash definition JSON", () => {
 					},
 				}),
 			),
-		).toThrow("swarm.agents.worker.waits_for must be an array of non-empty strings");
+		).toThrow("shortleash.agents.worker.waits_for must be an array of non-empty strings");
 	});
 
 	it("parses direct TypeScript policy module paths and typed parameters", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "parameterized",
 					workspace: ".",
 					checks: [{ path: "./checks/git.ts", params: { count: 3, ratio: 1.5, enabled: true, none: null } }],
@@ -151,7 +160,7 @@ describe("Shortleash execution policy defaults", () => {
 	it("defaults workers to shared workspace and no parent history", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "defaults",
 					workspace: ".",
 					agents: {
@@ -172,7 +181,7 @@ describe("Shortleash execution policy defaults", () => {
 	it("parses global policies and per-agent overrides", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "policies",
 					workspace: ".",
 					isolation: "worktree",
@@ -205,7 +214,7 @@ describe("Shortleash execution policy defaults", () => {
 	it("merges top-level checks into every declared agent in declaration order", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "inherited-policies",
 					workspace: ".",
 					checks: ["./policies/global-architecture.ts", "./policies/global-acceptance.ts"],
@@ -241,7 +250,7 @@ describe("Shortleash execution policy defaults", () => {
 	it("parses a no-agent definition for direct current-session execution", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "direct-current",
 					workspace: ".",
 					task: "Continue the current objective.",
@@ -259,19 +268,19 @@ describe("Shortleash execution policy defaults", () => {
 		expect(() =>
 			parseShortleash(
 				JSON.stringify({
-					swarm: {
+					shortleash: {
 						name: "removed-top-level-policy",
 						workspace: ".",
 						rules: [],
 					},
 				}),
 			),
-		).toThrow("swarm uses removed policy fields; use checks instead");
+		).toThrow("shortleash uses removed policy fields; use checks instead");
 
 		expect(() =>
 			parseShortleash(
 				JSON.stringify({
-					swarm: {
+					shortleash: {
 						name: "removed-agent-policy",
 						workspace: ".",
 						agents: {
@@ -280,14 +289,14 @@ describe("Shortleash execution policy defaults", () => {
 					},
 				}),
 			),
-		).toThrow("swarm.agents.worker uses removed policy fields; use checks instead");
+		).toThrow("shortleash.agents.worker uses removed policy fields; use checks instead");
 	});
 
 	it("rejects invalid isolation and history values", () => {
 		expect(() =>
 			parseShortleash(
 				JSON.stringify({
-					swarm: {
+					shortleash: {
 						name: "invalid-isolation",
 						workspace: ".",
 						isolation: "sandbox",
@@ -297,12 +306,12 @@ describe("Shortleash execution policy defaults", () => {
 					},
 				}),
 			),
-		).toThrow("swarm.isolation must be one of: none, worktree");
+		).toThrow("shortleash.isolation must be one of: none, worktree");
 
 		expect(() =>
 			parseShortleash(
 				JSON.stringify({
-					swarm: {
+					shortleash: {
 						name: "invalid-history",
 						workspace: ".",
 						inherit_history: "maybe",
@@ -312,15 +321,15 @@ describe("Shortleash execution policy defaults", () => {
 					},
 				}),
 			),
-		).toThrow("swarm.inherit_history must be a boolean or one of: parent, none");
+		).toThrow("shortleash.inherit_history must be a boolean or one of: parent, none");
 	});
 });
 
-describe("swarm lifecycle controls", () => {
+describe("shortleash lifecycle controls", () => {
 	it("normalizes failure and timeout controls", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "controls",
 					workspace: ".",
 					failure_policy: "fail_fast",
@@ -341,7 +350,7 @@ describe("swarm lifecycle controls", () => {
 	it("fingerprints semantically equivalent normalized definitions deterministically", () => {
 		const first = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "fingerprint",
 					workspace: ".",
 					agents: {
@@ -352,7 +361,7 @@ describe("swarm lifecycle controls", () => {
 		);
 		const second = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "fingerprint",
 					workspace: ".",
 					agents: {

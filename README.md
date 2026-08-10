@@ -1,10 +1,10 @@
 # Shortleash
 
-Shortleash is an oh-my-pi extension for guarded multi-agent implementation workflows. Define an acyclic dependency graph in JSON. Each declared agent runs as an oh-my-pi worker with the tools available to that host; the orchestrator owns ordering, persistence, policy boundaries, and recovery.
+Shortleash is an oh-my-pi extension for guarded multi-agent implementation workflows. Define an acyclic dependency graph in JSON. The default backend runs each declared agent as an oh-my-pi worker; the optional Gas City backend materializes the same graph as a Gas City v2 workflow. Shortleash owns policy boundaries and evidence; the selected backend owns scheduling and worker lifecycle.
 
-The implementation deliberately keeps the product name **Shortleash** separate from the definition format: the top-level configuration key is `swarm` because that is the parser contract, while Beads stores the same definition under `metadata.shortleash`.
+The canonical top-level definition key is `shortleash`; the legacy `swarm` key is still accepted when it is the only definition key. Beads stores the same definition under `metadata.shortleash`.
 
-The `swarm` spelling is retained only as the on-disk definition-format key; package APIs, commands, metadata, state paths, and policy module paths use **Shortleash**.
+New definitions and serialized examples use `shortleash` consistently across the definition format, package APIs, commands, metadata, state paths, and policy module paths.
 
 ## Setup
 
@@ -12,6 +12,7 @@ Requirements:
 
 - Bun `>=1.3.14`.
 - oh-my-pi `^17` when loading the extension in the TUI.
+- Gas City `gc` with formulas v2 support when using `--gascity`.
 
 Install the extension directly from GitHub:
 
@@ -33,7 +34,7 @@ The package exposes the `./src/extension.ts` OMP extension entrypoint. Load it t
 
 ### Resume and restart
 
-Shortleash persists state under the configured workspace. A second run never silently overwrites an existing run:
+The default OMP backend persists state under the configured workspace. A second OMP run never silently overwrites an existing run:
 
 ```text
 # Continue an unfinished run after a host/process restart.
@@ -43,7 +44,7 @@ Shortleash persists state under the configured workspace. A second run never sil
 /shortleash run path/to/shortleash.json --restart
 ```
 
-`--resume` requires the persisted definition hash, workspace, and agent set to remain compatible. Successful results already recorded for completed agents are reused; missing or failed work runs again. A stale valid `run.lock` is recoverable only with `--resume` or `--restart`; a corrupt lock is never removed automatically. A completed run requires `--restart` rather than `--resume`.
+`--resume` requires the persisted definition hash, workspace, and agent set to remain compatible. Successful results already recorded for completed agents are reused; missing or failed work runs again. A stale valid `run.lock` is recoverable only with `--resume` or `--restart`; a corrupt lock is never removed automatically. A completed OMP run requires `--restart` rather than `--resume`.
 
 `/shortleash evaluate` reads the persisted results and runs the configured policy evaluators without starting agents. A blocked decision is reported and stored in the state; it does not silently mark the pipeline complete.
 
@@ -63,7 +64,7 @@ Then use:
 
 ```text
 /shortleash run path/to/shortleash.json [--resume|--restart]
-/shortleash run shrtlsh-123
+/shortleash run path/to/shortleash.json --gascity [--resume|--restart]
 /shortleash run issue://shrtlsh-123
 /shortleash plan path/to/shortleash.json
 /shortleash inspect path/to/shortleash.json
@@ -90,6 +91,35 @@ Closing the overlay does not stop the run.
 Declared agents execute through OMP's structured subagent API. The dependency graph determines runnable waves; agents in a wave run concurrently subject to the host `task.maxConcurrency` setting, and later waves wait for their dependencies. The Shortleash widget and dashboard remain available in the TUI.
 
 OMP resolves each agent's optional native `agent` profile, creates the durable child session, and owns tool/isolation policy. `isolation: worktree` uses the host worktree-isolation lifecycle; corrective work reopens the same child journal because host isolated sessions are intentionally not resumable. `inherit_history` requires an interactive OMP session.
+
+### Gas City backend
+
+Use `/shortleash run <definition> --gascity` when Gas City should own the durable workflow instead of the in-process OMP pipeline. The adapter:
+
+1. validates the Shortleash definition and snapshots every referenced policy module;
+2. writes executable policy bridges and durable evidence paths under `<city>/.omp/shortleash/gascity/<formula>/`;
+3. compiles dependency edges, worker steps, policy checks, and the completion gate into a Gas City v2 formula;
+4. runs `gc formula cook`, optionally attaching an `issue://<id>` input, then routes the returned root to Gas City's `omp` target.
+
+The extension routes to `omp` by default. Override the target when the city uses another configured agent or pool:
+
+```text
+/shortleash run path/to/shortleash.json --gascity [--gascity-target <target>]
+```
+
+`gc status` and `gc dashboard` are the authoritative monitoring surfaces after routing. The lower-level `compileShortleashToGasCity` API only routes when its `routeTarget` option is supplied.
+
+The bridge receives Gas City's `GC_BEAD_ID` and `GC_ITERATION`, reloads the allowlisted policy modules by content hash, evaluates checks/evals, and stores attempt history plus artifacts. A failed policy exits non-zero, so Gas City keeps the control bead blocked and can provide corrective feedback to the worker session.
+
+For a Beads epic input, Shortleash creates one child task containing the materialized workflow metadata and attaches the workflow to that child. For a non-epic issue, it attaches directly. `--resume` reuses the persisted `workflow.json` when the definition and policy hashes match; `--restart` deliberately re-materializes, subject to Gas City's attach idempotency rules.
+
+Gas City mode does not emulate Shortleash's OMP-only features. Worktree isolation, parent transcript inheritance, and `agent_timeout_ms` are reported as warnings and must be configured through Gas City/provider settings; `/shortleash status` reports only the in-process backend state.
+
+The normal backend remains the default; omit `--gascity`:
+
+```text
+/shortleash run path/to/shortleash.json [--resume|--restart]
+```
 
 ## Durable state and monitoring
 
@@ -119,7 +149,7 @@ The state file records the definition hash, agent status, result history, policy
 
 ## Configuration reference
 
-Every definition is one JSON document with exactly one top-level `swarm` object. `name` and `workspace` are required. Unknown keys are rejected. The parser also rejects the removed `rules` and `must` policy fields; use `checks` instead.
+Every definition is one JSON document with exactly one top-level `shortleash` object. `name` and `workspace` are required. Unknown keys are rejected. The parser also rejects the removed `rules` and `must` policy fields; use `checks` instead.
 
 <details>
 <summary>Minimal current-session definition</summary>
@@ -128,7 +158,7 @@ Use this form from `/shortleash run` when the current OMP session should do the 
 
 ```json
 {
-  "swarm": {
+  "shortleash": {
     "name": "repository-maintenance",
     "workspace": ".",
     "task": "Inspect the repository, implement the requested change, and report evidence."
@@ -145,7 +175,7 @@ Use `agents` for TUI runs or any DAG with multiple workers.
 
 ```json
 {
-  "swarm": {
+  "shortleash": {
     "name": "codebase-audit",
     "workspace": "./workspace",
     "agents": {
@@ -169,7 +199,7 @@ Use `agents` for TUI runs or any DAG with multiple workers.
 
 ```json
 {
-  "swarm": {
+  "shortleash": {
     "name": "feature-implementation",
     "workspace": "./workspace",
     "failure_policy": "skip_dependents",
@@ -210,7 +240,7 @@ The JSON definition uses snake_case keys:
 
 ```json
 {
-  "swarm": {
+  "shortleash": {
     "name": "feature-implementation",
     "workspace": "./workspace",
     "failure_policy": "continue",
@@ -239,7 +269,7 @@ Use `isolation` to choose shared workspace execution or host-managed worktrees. 
 
 ```json
 {
-  "swarm": {
+  "shortleash": {
     "name": "isolated-build",
     "workspace": "./workspace",
     "isolation": "worktree",
@@ -285,7 +315,7 @@ Use `isolation` to choose shared workspace execution or host-managed worktrees. 
 | `extra_context` | no | Additional system-prompt text. |
 | `reports_to` | no | Each listed target depends on this agent. |
 | `waits_for` | no | Explicit dependencies for this agent. |
-| `model` | no | Overrides `swarm.model`. |
+| `model` | no | Overrides `shortleash.model`. |
 | `isolation` | no | Overrides global isolation; `workspace_isolation` is an alias. |
 | `inherit_history` | no | Overrides global parent-history behavior; `history` and `parent_history` are aliases. |
 | `checks` | no | Agent-scoped check references, merged with top-level checks. |
@@ -362,6 +392,8 @@ Policies are executable runtime contracts, not prompt instructions:
 - Supported boundaries are `agent`, `wave`, and `complete`. A top-level policy defaults to `complete`; an agent-scoped policy defaults to `agent`.
 - Top-level references are evaluated for the whole definition and inherited into each declared agent's scoped policy set. Agent-scoped policies run during finalization and can return corrective feedback to the same worker session.
 - Every policy context includes the normalized definition, `cwd`, `workspace`, `shortleashDir`, boundary, optional attempt/wave/agent, normalized `params`, optional before/after `observation`, latest results, result history, and durable state.
+- In OMP, policy modules may call optional `context.judge({ prompt, outputSchema, agent?, model?, schemaMode? })` for a model-backed structured judgment. The host runs it through OMP's structured-subagent API in a separate durable child session and returns parsed data plus a `shortleash://` evidence reference; standalone and Gas City policy contexts do not provide this capability.
+
 - A policy can define `capture(context)` to record before/after snapshots. The snapshots and structured decisions are persisted in `state/pipeline.json`.
 
 <details>
@@ -452,7 +484,7 @@ Agent-scoped policies run at finalization. When one rejects a result, Shortleash
 
 ```json
 {
-  "swarm": {
+  "shortleash": {
     "name": "guarded-implementation",
     "workspace": "./workspace",
     "failure_policy": "skip_dependents",
@@ -479,7 +511,7 @@ Agent-scoped policies run at finalization. When one rejects a result, Shortleash
 
 ```json
 {
-  "swarm": {
+  "shortleash": {
     "name": "codebase-audit",
     "workspace": "./workspace",
     "agents": {
@@ -517,7 +549,7 @@ The three specialists form wave 1 and `lead` forms wave 2.
 
 ```json
 {
-  "swarm": {
+  "shortleash": {
     "name": "feature-implementation",
     "workspace": "./workspace",
     "agents": {
@@ -559,7 +591,7 @@ This produces planner (wave 1), `api` + `ui` + `tests` (wave 2), and integrator 
 
 ```json
 {
-  "swarm": {
+  "shortleash": {
     "name": "data-pipeline",
     "workspace": "./workspace",
     "agents": {
@@ -616,7 +648,7 @@ Any model ID configured in oh-my-pi may be used:
 
 ```json
 {
-  "swarm": {
+  "shortleash": {
     "name": "writing-team",
     "workspace": "./workspace",
     "model": "claude-opus-4-6",
@@ -635,7 +667,7 @@ Any model ID configured in oh-my-pi may be used:
 }
 ```
 
-Precedence is `agents.<name>.model` → `swarm.model` → the OMP session default. Shortleash does not ship or validate a model catalog.
+Precedence is `agents.<name>.model` → `shortleash.model` → the OMP session default. Shortleash does not ship or validate a model catalog.
 
 </details>
 

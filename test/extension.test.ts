@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import shortleashExtension from "../src/extension";
 
@@ -129,5 +132,53 @@ describe("Shortleash command completions", () => {
 			"help",
 		]);
 		expect(await complete(command, "run ")).toBeNull();
+	});
+	it("finalizes a direct current-session run through the shared policy path", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "shortleash-direct-extension-test-"));
+		try {
+			const definitionPath = path.join(root, "workflow.json");
+			await fs.writeFile(
+				definitionPath,
+				JSON.stringify({ shortleash: { name: "direct-extension", workspace: "./workspace", task: "finish" } }),
+			);
+			type TestHandler = (event: unknown, context: unknown) => Promise<void> | void;
+			type TestCommand = { handler: (args: string, context: unknown) => Promise<void> | void };
+			const handlers = new Map<string, TestHandler>();
+			const commands = new Map<string, TestCommand>();
+			const notices: string[] = [];
+			const messages: string[] = [];
+			const sessionManager = { getSessionId: () => "direct-extension-session", getBranch: () => [] };
+			const ctx = {
+				cwd: root,
+				sessionManager,
+				modelRegistry: {},
+				ui: { notify: (message: string) => notices.push(message) },
+			};
+			const pi = {
+				on: (event: string, handler: TestHandler) => {
+					handlers.set(event, handler);
+				},
+				registerCommand: (name: string, command: TestCommand) => commands.set(name, command),
+				registerTool: () => {},
+				exec: async () => ({ stdout: "[]", stderr: "", code: 0, killed: false }),
+				sendUserMessage: (message: string) => messages.push(message),
+				logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+				pi: { settings: undefined },
+			} as unknown as ExtensionAPI;
+
+			shortleashExtension(pi);
+			const command = commands.get("shortleash");
+			if (!command) throw new Error("shortleash command was not registered");
+			await command.handler(`run ${definitionPath}`, ctx);
+			const agentEnd = handlers.get("agent_end");
+			if (!agentEnd) throw new Error("agent_end handler was not registered");
+			await agentEnd({ willContinue: false, messages: [{ role: "assistant", content: "done" }] }, ctx);
+
+			expect(notices).toContain("Shortleash 'direct-extension' completed in the current OMP session.");
+			expect(messages).toHaveLength(1);
+			expect(messages[0]).toContain("\nfinish\n");
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
 	});
 });

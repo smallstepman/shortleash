@@ -1,7 +1,12 @@
 {
   "database": "dolt",
   "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "obligated",
-  "project_id": "2ca7fa9f-4ae4-4d8c-97d5-6bb63e496575"
+  "dolt_mode": "server",
+  "dolt_server_host": "127.0.0.1",
+  "dolt_server_port": 3995,
+  "dolt_server_user": "root",
+  "dolt_database": "beads_global",
+  "project_id": "00000000-0000-0000-0000-000000000000",
+  "global_dolt_database": "beads_global",
+  "global_project_id": "00000000-0000-0000-0000-000000000000"
 }

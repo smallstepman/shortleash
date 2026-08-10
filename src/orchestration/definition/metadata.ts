@@ -117,7 +117,7 @@ export function validateShortleashMetadata(value: unknown, field = "metadata"): 
 	}
 
 	validateRawShortleashConfig(metadata.shortleash, `${field}.shortleash`);
-	const definition = parseShortleash(JSON.stringify({ swarm: metadata.shortleash }));
+	const definition = parseShortleash(JSON.stringify({ shortleash: metadata.shortleash }));
 	const semanticErrors = validateShortleashDefinition(definition);
 	const cycles = detectCycles(buildDependencyGraph(definition));
 	if (cycles) semanticErrors.push(`cycle detected in agent dependencies: [${cycles.join(", ")}]`);

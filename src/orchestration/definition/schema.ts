@@ -258,7 +258,10 @@ function parseStringArray(value: unknown, field: string): string[] {
 	return value.map(entry => entry.trim());
 }
 /** Validate the untrusted raw definition shape before normalization. */
-export function validateShortleashInput(value: unknown, field = "swarm"): asserts value is Record<string, unknown> {
+export function validateShortleashInput(
+	value: unknown,
+	field = "shortleash",
+): asserts value is Record<string, unknown> {
 	if (!isRecord(value)) throw new Error(`${field} must be an object`);
 	rejectRemovedPolicyFields(value, field);
 	assertKnownKeys(value, RAW_SHORTLEASH_KEYS, field);
@@ -291,36 +294,41 @@ export function parseShortleash(content: string): ShortleashDefinition {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Shortleash definition must be valid JSON: ${message}`);
 	}
-	if (!isRecord(raw) || !isRecord(raw.swarm)) {
-		throw new Error("Shortleash definition must have a top-level 'swarm' key");
+	const hasShortleashKey = isRecord(raw) && isRecord(raw.shortleash);
+	const hasLegacySwarmKey = isRecord(raw) && isRecord(raw.swarm);
+	if (hasShortleashKey === hasLegacySwarmKey) {
+		throw new Error("Shortleash definition must have exactly one top-level 'shortleash' or legacy 'swarm' key");
 	}
-	validateShortleashInput(raw.swarm);
-	const config = raw.swarm as RawShortleashConfig;
-	rejectRemovedPolicyFields(config, "swarm");
+	const configKey = hasShortleashKey ? "shortleash" : "swarm";
+	const configValue = (raw as Record<string, unknown>)[configKey];
+	validateShortleashInput(configValue, configKey);
+	const config = configValue as RawShortleashConfig;
+	rejectRemovedPolicyFields(config, configKey);
 
-	const name = parseRequiredString(config.name, "swarm.name");
+	const name = parseRequiredString(config.name, `${configKey}.name`);
 	if (!VALID_SHORTLEASH_NAME.test(name)) {
-		throw new Error("swarm.name may only contain letters, numbers, dot, underscore, and dash");
+		throw new Error(`${configKey}.name may only contain letters, numbers, dot, underscore, and dash`);
 	}
-	const workspace = parseRequiredString(config.workspace, "swarm.workspace");
-	const task = parseOptionalString(config.task, "swarm.task");
+	const workspace = parseRequiredString(config.workspace, `${configKey}.workspace`);
+	const task = parseOptionalString(config.task, `${configKey}.task`);
 	const rawAgents = config.agents;
 	if (rawAgents !== undefined && (!isRecord(rawAgents) || Object.keys(rawAgents).length === 0)) {
-		throw new Error("swarm.agents must contain at least one agent when provided");
+		throw new Error(`${configKey}.agents must contain at least one agent when provided`);
 	}
 
 	const workspaceIsolation =
-		parseIsolationMode(firstDefined(config.isolation, config.workspace_isolation), "swarm.isolation") ?? "none";
+		parseIsolationMode(firstDefined(config.isolation, config.workspace_isolation), `${configKey}.isolation`) ??
+		"none";
 	const inheritHistory =
 		parseHistoryInheritance(
 			firstDefined(config.inherit_history, config.history, config.parent_history),
-			"swarm.inherit_history",
+			`${configKey}.inherit_history`,
 		) ?? false;
 	const failurePolicy = parseFailurePolicy(config.failure_policy);
-	const agentTimeoutMs = parsePositiveInteger(config.agent_timeout_ms, "swarm.agent_timeout_ms");
-	const model = parseOptionalString(config.model, "swarm.model");
-	const checks = parsePolicyRefs(config.checks, "swarm.checks");
-	const evals = parsePolicyRefs(config.evals, "swarm.evals");
+	const agentTimeoutMs = parsePositiveInteger(config.agent_timeout_ms, `${configKey}.agent_timeout_ms`);
+	const model = parseOptionalString(config.model, `${configKey}.model`);
+	const checks = parsePolicyRefs(config.checks, `${configKey}.checks`);
+	const evals = parsePolicyRefs(config.evals, `${configKey}.evals`);
 
 	const agentOrder: string[] = [];
 	const agents = new Map<string, ShortleashAgent>();
@@ -331,30 +339,30 @@ export function parseShortleash(content: string): ShortleashDefinition {
 			throw new Error(`Agent '${agentName}' must be an object`);
 		}
 		const config = rawConfig as RawShortleashAgentConfig;
-		rejectRemovedPolicyFields(config, `swarm.agents.${agentName}`);
+		rejectRemovedPolicyFields(config, `${configKey}.agents.${agentName}`);
 		const role = parseRequiredString(config.role, `Agent '${agentName}': 'role'`);
 		const agentTask = parseRequiredString(config.task, `Agent '${agentName}': 'task'`);
 
 		agentOrder.push(agentName);
 		agents.set(agentName, {
 			name: agentName,
-			agent: parseOptionalString(config.agent, `swarm.agents.${agentName}.agent`),
+			agent: parseOptionalString(config.agent, `${configKey}.agents.${agentName}.agent`),
 			role,
 			task: agentTask,
-			extraContext: parseOptionalString(config.extra_context, `swarm.agents.${agentName}.extra_context`),
-			reportsTo: parseStringArray(config.reports_to, `swarm.agents.${agentName}.reports_to`),
-			model: parseOptionalString(config.model, `swarm.agents.${agentName}.model`),
+			extraContext: parseOptionalString(config.extra_context, `${configKey}.agents.${agentName}.extra_context`),
+			reportsTo: parseStringArray(config.reports_to, `${configKey}.agents.${agentName}.reports_to`),
+			model: parseOptionalString(config.model, `${configKey}.agents.${agentName}.model`),
 			workspaceIsolation: parseIsolationMode(
 				firstDefined(config.isolation, config.workspace_isolation),
-				`swarm.agents.${agentName}.isolation`,
+				`${configKey}.agents.${agentName}.isolation`,
 			),
 			inheritHistory: parseHistoryInheritance(
 				firstDefined(config.inherit_history, config.history, config.parent_history),
-				`swarm.agents.${agentName}.inherit_history`,
+				`${configKey}.agents.${agentName}.inherit_history`,
 			),
-			waitsFor: parseStringArray(config.waits_for, `swarm.agents.${agentName}.waits_for`),
-			checks: [...checks, ...parsePolicyRefs(config.checks, `swarm.agents.${agentName}.checks`)],
-			evals: [...evals, ...parsePolicyRefs(config.evals, `swarm.agents.${agentName}.evals`)],
+			waitsFor: parseStringArray(config.waits_for, `${configKey}.agents.${agentName}.waits_for`),
+			checks: [...checks, ...parsePolicyRefs(config.checks, `${configKey}.agents.${agentName}.checks`)],
+			evals: [...evals, ...parsePolicyRefs(config.evals, `${configKey}.agents.${agentName}.evals`)],
 		});
 	}
 
@@ -396,7 +404,7 @@ export function validateShortleashDefinition(def: ShortleashDefinition): string[
 	const agentNames = new Set(def.agents.keys());
 
 	if (def.model !== undefined && def.model.length === 0) {
-		errors.push("swarm.model must not be empty when provided");
+		errors.push("shortleash.model must not be empty when provided");
 	}
 	for (const [name, agent] of def.agents) {
 		for (const dep of agent.waitsFor) {

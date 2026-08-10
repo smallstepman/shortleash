@@ -64,3 +64,12 @@ issue-prefix: "shrtlsh"
 # Secret keys (stored in this file but prefer env vars to avoid git exposure):
 # - linear.api_key  → use LINEAR_API_KEY env var instead
 # - github.token    → use GITHUB_TOKEN env var instead
+
+
+dolt.shared-server: true
+dolt.mode: server
+dolt.auto-start: false
+dolt.host: 127.0.0.1
+dolt.port: 3995
+dolt.user: root
+dolt.database: beads_global

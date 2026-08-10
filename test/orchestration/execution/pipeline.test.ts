@@ -54,7 +54,7 @@ describe("pipeline agent guardrails", () => {
 	it("places independent agents in one initial wave", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "independent-wave",
 					workspace: ".",
 					agents: {
@@ -69,7 +69,7 @@ describe("pipeline agent guardrails", () => {
 	it("blocks a wave when an agent-scoped check fails", async () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "scoped-policy-pipeline",
 					workspace: ".",
 					agents: {
@@ -124,7 +124,7 @@ describe("pipeline agent guardrails", () => {
 	it("retries an agent after a rejected finalization without spawning a new session", async () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "finalization-policy-pipeline",
 					workspace: ".",
 					agents: {
@@ -221,7 +221,7 @@ describe("pipeline resume", () => {
 	it("reuses persisted successful results instead of spawning the completed agent", async () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "resume-pipeline",
 					workspace: ".",
 					agents: {
@@ -267,7 +267,7 @@ describe("pipeline failure and cancellation semantics", () => {
 	it("uses the host task concurrency setting for a ready wave", async () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "host-concurrency",
 					workspace: ".",
 					agents: {
@@ -325,7 +325,7 @@ describe("pipeline failure and cancellation semantics", () => {
 	it("skips dependent waves after a failed agent by default", async () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "skip-dependents",
 					workspace: ".",
 					agents: {
@@ -372,7 +372,7 @@ describe("pipeline failure and cancellation semantics", () => {
 	it("continues independent and dependent waves when explicitly configured", async () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "continue-failures",
 					workspace: ".",
 					failure_policy: "continue",
@@ -420,7 +420,7 @@ describe("pipeline failure and cancellation semantics", () => {
 	it("marks a mid-wave cancellation as aborted instead of completed", async () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "abort",
 					workspace: ".",
 					agents: {
@@ -466,7 +466,7 @@ describe("pipeline failure and cancellation semantics", () => {
 it("keeps cancellation terminal when completion evaluation returns", async () => {
 	const definition = parseShortleash(
 		JSON.stringify({
-			swarm: {
+			shortleash: {
 				name: "abort-during-completion",
 				workspace: ".",
 				checks: [policyPath("cancel-on-complete")],

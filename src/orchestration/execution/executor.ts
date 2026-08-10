@@ -18,6 +18,11 @@ import {
 } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import type { ShortleashAgent, ShortleashDefinition, ShortleashIsolationMode } from "../definition/schema";
+import type {
+	ShortleashPolicyJudge,
+	ShortleashPolicyJudgeRequest,
+	ShortleashPolicyJudgeResult,
+} from "../policy/policies";
 import type { StateTracker } from "./state";
 
 export interface ShortleashExecutorOptions {
@@ -90,12 +95,14 @@ async function createWorkerSettings(
 	return workerSettings;
 }
 
-function createWorkerToolSession(
-	options: ShortleashExecutorOptions,
-	settings: Settings,
-	sessionFile: string,
-): ToolSession {
-	const artifactsDir = sessionFile.slice(0, -".jsonl".length);
+function createChildToolSession(options: {
+	workspace: string;
+	modelOverride?: string;
+	modelRegistry?: ModelRegistry;
+	settings: Settings;
+	sessionFile: string;
+}): ToolSession {
+	const artifactsDir = options.sessionFile.slice(0, -".jsonl".length);
 	return {
 		cwd: options.workspace,
 		hasUI: false,
@@ -103,13 +110,142 @@ function createWorkerToolSession(
 		enableLsp: false,
 		enableIrc: false,
 		enableMCP: false,
-		getSessionFile: () => sessionFile,
+		getSessionFile: () => options.sessionFile,
 		getArtifactsDir: () => artifactsDir,
 		getSessionSpawns: () => null,
 		getModelString: () => options.modelOverride,
 		getActiveModelString: () => options.modelOverride,
 		modelRegistry: options.modelRegistry,
+		settings: options.settings,
+	};
+}
+
+function createWorkerToolSession(
+	options: ShortleashExecutorOptions,
+	settings: Settings,
+	sessionFile: string,
+): ToolSession {
+	return createChildToolSession({
+		workspace: options.workspace,
+		modelOverride: options.modelOverride,
+		modelRegistry: options.modelRegistry,
 		settings,
+		sessionFile,
+	});
+}
+
+export interface ShortleashPolicyJudgeOptions {
+	workspace: string;
+	shortleashDir: string;
+	shortleashName: string;
+	modelRegistry?: ModelRegistry;
+	settings?: Settings;
+	/** Optional parent branch copied into each judge's durable child session. */
+	parentMessages?: AgentMessage[];
+	/** Default model selector used when a request does not specify one. */
+	model?: string;
+	/** Default agent definition used when a request does not specify one. */
+	agent?: string;
+	signal?: AbortSignal;
+}
+
+/**
+ * Create a host-backed policy judge that uses the current OMP provider setup
+ * without re-entering the current conversation.
+ */
+export function createShortleashPolicyJudge(options: ShortleashPolicyJudgeOptions): ShortleashPolicyJudge {
+	let invocation = 0;
+	return async <T = unknown>(request: ShortleashPolicyJudgeRequest): Promise<ShortleashPolicyJudgeResult<T>> => {
+		if (request.outputSchema === undefined) {
+			throw new Error("Shortleash policy judges require an output schema.");
+		}
+		const sequence = ++invocation;
+		const judgeId = `shortleash-${safeSessionDirectoryName(options.shortleashName)}-policy-judge-${Date.now()}-${sequence}`;
+		const sessionDirectory = path.join(
+			options.shortleashDir,
+			"context",
+			"policy-judges",
+			safeSessionDirectoryName(judgeId),
+		);
+		const sessionFile = await createChildSessionFile(
+			options.workspace,
+			sessionDirectory,
+			options.parentMessages ?? [],
+		);
+		const settings = await createWorkerSettings(options.settings, options.workspace, undefined);
+		const model = request.model ?? options.model;
+		const session = createChildToolSession({
+			workspace: options.workspace,
+			modelOverride: model,
+			modelRegistry: options.modelRegistry,
+			settings,
+			sessionFile,
+		});
+		const execution = await runStructuredSubagent({
+			session,
+			invocationKind: "eval",
+			assignment: request.prompt,
+			context:
+				"You are a Shortleash policy judge. Review evidence without modifying the workspace and return only the requested structured verdict.",
+			agent: request.agent ?? options.agent ?? "reviewer",
+			...(model !== undefined ? { model } : {}),
+			outputSchema: request.outputSchema,
+			schemaMode: request.schemaMode ?? "strict",
+			identity: { id: judgeId, label: `Shortleash policy judge ${sequence}` },
+			keepAlive: false,
+			retainArtifacts: true,
+			shareEvalSession: false,
+			enableLsp: false,
+			enableIrc: false,
+			signal: request.signal ?? options.signal,
+		});
+		const { result, artifactsDir } = execution;
+		if (result.exitCode !== 0 || result.error || result.aborted) {
+			throw new Error(
+				`Shortleash policy judge failed: ${result.error ?? result.abortReason ?? result.stderr ?? `exit code ${result.exitCode}`}`,
+			);
+		}
+		const structuredOutput = result.structuredOutput;
+		if (structuredOutput?.status !== "valid" || !Object.hasOwn(structuredOutput, "data")) {
+			throw new Error(
+				`Shortleash policy judge returned invalid structured output${structuredOutput?.error ? `: ${structuredOutput.error}` : "."}`,
+			);
+		}
+
+		const evidenceDirectory = path.join(options.shortleashDir, "context", "policy-judges");
+		await fs.mkdir(evidenceDirectory, { recursive: true });
+		const evidencePath = path.join(evidenceDirectory, `${safeSessionDirectoryName(judgeId)}.json`);
+		await fs.writeFile(
+			evidencePath,
+			JSON.stringify(
+				{
+					type: "shortleash-policy-judge",
+					createdAt: new Date().toISOString(),
+					id: result.id,
+					agent: result.agent,
+					model: result.resolvedModel ?? model,
+					request: {
+						prompt: request.prompt,
+						outputSchema: request.outputSchema,
+						schemaMode: request.schemaMode ?? "strict",
+					},
+					response: {
+						data: structuredOutput.data,
+						output: result.output,
+						structuredOutput,
+						artifactsDir,
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		return {
+			data: structuredOutput.data as T,
+			result,
+			evidenceRef: `shortleash://${path.relative(options.shortleashDir, evidencePath).split(path.sep).join("/")}`,
+		};
 	};
 }
 

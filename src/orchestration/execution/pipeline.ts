@@ -14,13 +14,21 @@ import {
 	type ShortleashAgent,
 	type ShortleashDefinition,
 } from "../definition/schema";
+import {
+	captureShortleashPolicyBoundaries,
+	combineShortleashPolicyDecisions,
+	finalizeShortleashPolicyBoundaries,
+	formatShortleashPolicyFailures,
+	formatShortleashPolicyFeedback,
+} from "../policy/finalization";
 import type {
 	ShortleashPolicyBoundary,
 	ShortleashPolicyContext,
 	ShortleashPolicyDecision,
-	ShortleashPolicyObservations,
+	ShortleashPolicyJudge,
 	ShortleashPolicyRegistry,
 } from "../policy/policies";
+
 import { mapWithConcurrency } from "./concurrency";
 import { buildDependencyGraph } from "./dag";
 import { executeShortleashAgent } from "./executor";
@@ -36,6 +44,9 @@ export interface PipelineOptions {
 	modelRegistry?: ModelRegistry;
 	settings?: Settings;
 	policyRegistry?: ShortleashPolicyRegistry;
+	/** Host-backed structured subagent capability available to policy modules. */
+	policyJudge?: ShortleashPolicyJudge;
+
 	beadsProjector?: ShortleashBeadsProjector;
 	/** Current parent OMP branch, copied into workers that request inheritance. */
 	parentMessages?: AgentMessage[];
@@ -61,6 +72,8 @@ interface GraphRunOptions {
 	emitProgress: (currentWave: number) => void;
 	modelRegistry?: ModelRegistry;
 	settings?: Settings;
+	policyJudge?: ShortleashPolicyJudge;
+
 	policyRegistry?: ShortleashPolicyRegistry;
 	parentMessages?: AgentMessage[];
 	history: ReadonlyMap<string, readonly SingleResult[]>;
@@ -141,6 +154,8 @@ export class PipelineController {
 				modelRegistry,
 				settings,
 				policyRegistry,
+				policyJudge: options.policyJudge,
+
 				parentMessages: options.parentMessages,
 				history,
 				onWaveComplete: async (wave, latestResults) => {
@@ -170,7 +185,7 @@ export class PipelineController {
 			}
 
 			if (graphRun.policyDecision && !graphRun.policyDecision.accepted) {
-				errors.push(...formatPolicyErrors(graphRun.policyDecision));
+				errors.push(...formatShortleashPolicyFailures(graphRun.policyDecision));
 				await this.#stateTracker.updatePipeline({ status: "failed", completedAt: Date.now() });
 				await this.#stateTracker.appendOrchestratorLog(
 					`Pipeline blocked by policy at wave ${graphRun.policyDecision.boundary}`,
@@ -217,7 +232,7 @@ export class PipelineController {
 				return await this.#abort(agentResults, errors, latestPolicy, options.beadsProjector);
 			}
 			if (completeDecision && !completeDecision.accepted) {
-				errors.push(...formatPolicyErrors(completeDecision));
+				errors.push(...formatShortleashPolicyFailures(completeDecision));
 				await this.#stateTracker.updatePipeline({ status: "failed", completedAt: Date.now() });
 				await this.#stateTracker.appendOrchestratorLog("Pipeline blocked by completion policy");
 				await this.#project(options.beadsProjector, {
@@ -352,9 +367,14 @@ export class PipelineController {
 							results,
 							options.history,
 							options.workspace,
+							options.policyJudge,
+							options.signal,
 						);
+
 						const before = options.policyRegistry
-							? await options.policyRegistry.capture(this.#def, beforeContext, "before", agent)
+							? await captureShortleashPolicyBoundaries(options.policyRegistry, this.#def, "before", [
+									{ context: beforeContext, references: agent },
+								])
 							: new Map<string, unknown>();
 						await this.#stateTracker.recordPolicyObservations(agentName, 0, "before", before);
 						let beforeForAttempt = before;
@@ -382,9 +402,12 @@ export class PipelineController {
 												results,
 												options.history,
 												options.workspace,
+												options.policyJudge,
+												options.signal,
 												beforeForAttempt,
 												candidate,
 											);
+
 											beforeForAttempt = finalized.beforeForNextAttempt;
 											return finalized.feedback;
 										}
@@ -448,6 +471,8 @@ export class PipelineController {
 		latestResults: ReadonlyMap<string, SingleResult>,
 		history: ReadonlyMap<string, readonly SingleResult[]>,
 		workspace: string,
+		policyJudge?: ShortleashPolicyJudge,
+		signal?: AbortSignal,
 	): ShortleashPolicyContext {
 		return {
 			definition: this.#def,
@@ -462,6 +487,8 @@ export class PipelineController {
 			latestResults: new Map(latestResults),
 			history: this.#historyWithCurrent(history, latestResults),
 			state: this.#stateTracker.state,
+			judge: policyJudge,
+			signal,
 		};
 	}
 
@@ -474,24 +501,31 @@ export class PipelineController {
 		latestResults: ReadonlyMap<string, SingleResult>,
 		history: ReadonlyMap<string, readonly SingleResult[]>,
 		workspace: string,
+		policyJudge: ShortleashPolicyJudge | undefined,
+		signal: AbortSignal | undefined,
 		before: ReadonlyMap<string, unknown>,
 		candidate: SingleResult,
 	): Promise<{ feedback?: string; beforeForNextAttempt: ReadonlyMap<string, unknown> }> {
 		const candidateResults = new Map(latestResults);
 		candidateResults.set(agentName, candidate);
-		const context = this.#buildAgentPolicyContext(wave, agentName, attempt, candidateResults, history, workspace);
-		await this.#stateTracker.recordPolicyObservations(agentName, attempt, "before", before);
-		const after = await registry.capture(this.#def, context, "after", agent);
-		await this.#stateTracker.recordPolicyObservations(agentName, attempt, "after", after);
-		const observations: ShortleashPolicyObservations = new Map(
-			[...new Set([...before.keys(), ...after.keys()])].map(key => [
-				key,
-				{ before: before.get(key), after: after.get(key) },
-			]),
+		const context = this.#buildAgentPolicyContext(
+			wave,
+			agentName,
+			attempt,
+			candidateResults,
+			history,
+			workspace,
+			policyJudge,
+			signal,
 		);
-		const decision = await registry.evaluate(this.#def, context, agent, observations);
-		await this.#stateTracker.updatePolicy(decision, { wave, agent: agentName });
-		if (decision.accepted) return { beforeForNextAttempt: after };
+		await this.#stateTracker.recordPolicyObservations(agentName, attempt, "before", before);
+		const finalization = await finalizeShortleashPolicyBoundaries(registry, this.#def, [
+			{ context, references: agent, before },
+		]);
+		const [finalized] = finalization.boundaries;
+		await this.#stateTracker.recordPolicyObservations(agentName, attempt, "after", finalization.after);
+		await this.#stateTracker.updatePolicy(finalized.decision, { wave, agent: agentName });
+		if (finalized.decision.accepted) return { beforeForNextAttempt: finalization.after };
 
 		const nextContext = this.#buildAgentPolicyContext(
 			wave,
@@ -500,11 +534,19 @@ export class PipelineController {
 			candidateResults,
 			history,
 			workspace,
+			policyJudge,
+			signal,
 		);
-		const beforeForNextAttempt = await registry.capture(this.#def, nextContext, "before", agent);
+		const beforeForNextAttempt = await captureShortleashPolicyBoundaries(registry, this.#def, "before", [
+			{ context: nextContext, references: agent },
+		]);
 		await this.#stateTracker.recordPolicyObservations(agentName, attempt + 1, "before", beforeForNextAttempt);
 		return {
-			feedback: formatAgentPolicyFeedback(agentName, decision),
+			feedback: formatShortleashPolicyFeedback(
+				finalized.decision,
+				`Agent '${agentName}' finalization was rejected by runtime policy.`,
+				"Correct the work described by these findings, then continue working in this same session.",
+			),
 			beforeForNextAttempt,
 		};
 	}
@@ -538,6 +580,8 @@ export class PipelineController {
 			latestResults,
 			history,
 			state: this.#stateTracker.state,
+			judge: options.policyJudge,
+			signal: options.signal,
 		};
 		const decisions: ShortleashPolicyDecision[] = [];
 		if (hasGlobalPolicies) decisions.push(await registry.evaluate(this.#def, context));
@@ -547,12 +591,7 @@ export class PipelineController {
 			decisions.push(await registry.evaluate(this.#def, { ...context, agent: agentName }, agent));
 		}
 
-		const decision: ShortleashPolicyDecision = {
-			boundary,
-			accepted: decisions.every(item => item.accepted),
-			failures: decisions.flatMap(item => item.failures),
-			evaluations: decisions.flatMap(item => item.evaluations),
-		};
+		const decision = combineShortleashPolicyDecisions(decisions);
 		await this.#stateTracker.updatePolicy(decision, { wave });
 		return decision;
 	}
@@ -603,18 +642,6 @@ function makeDependencyFailureResult(definition: ShortleashDefinition, agentName
 		requests: 0,
 		error,
 	};
-}
-
-function formatPolicyErrors(decision: ShortleashPolicyDecision): string[] {
-	return decision.failures.map(failure => `${failure.source} ${failure.id}: ${failure.message}`);
-}
-function formatAgentPolicyFeedback(agentName: string, decision: ShortleashPolicyDecision): string {
-	const failures = formatPolicyErrors(decision);
-	return [
-		`Agent '${agentName}' finalization was rejected by runtime policy.`,
-		...failures.map(failure => `- ${failure}`),
-		"Correct the work described by these findings, then continue working in this same session.",
-	].join("\n");
 }
 
 function resolveTaskConcurrency(settings: Settings | undefined, itemCount: number): number {

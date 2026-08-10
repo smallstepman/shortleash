@@ -63,7 +63,7 @@ describe("Beads-backed Shortleash input", () => {
 			await fs.writeFile(
 				filePath,
 				JSON.stringify({
-					swarm: {
+					shortleash: {
 						name: "file-workflow",
 						workspace: ".",
 						agents: { worker: { role: "engineer", task: "Run the work." } },

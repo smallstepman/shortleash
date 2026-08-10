@@ -13,7 +13,7 @@ describe("Shortleash dashboard rendering", () => {
 	it("renders graph rows and at most five recent actions", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "dashboard",
 					workspace: ".",
 					agents: {
@@ -64,7 +64,7 @@ describe("Shortleash dashboard rendering", () => {
 	it("draws diagonal branches and animates active nodes", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "diamond",
 					workspace: ".",
 					agents: {
@@ -97,7 +97,7 @@ describe("Shortleash dashboard rendering", () => {
 	it("uses rounded merged connectors and independent dense animation", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "dense",
 					workspace: ".",
 					agents: {
@@ -199,7 +199,7 @@ describe("Shortleash dashboard rendering", () => {
 	it("keeps library-backed graph output deterministic and bounded at narrow widths", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "narrow",
 					workspace: ".",
 					agents: {
@@ -233,7 +233,7 @@ describe("Shortleash dashboard rendering", () => {
 	it("reports cycles without throwing and ignores unknown dependency references", () => {
 		const cycle = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "cycle",
 					workspace: ".",
 					agents: {
@@ -255,7 +255,7 @@ describe("Shortleash dashboard rendering", () => {
 
 		const missing = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "missing",
 					workspace: ".",
 					agents: {
@@ -278,7 +278,7 @@ describe("Shortleash dashboard rendering", () => {
 	it("preserves status colors through the text canvas", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "colors",
 					workspace: ".",
 					agents: {

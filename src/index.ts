@@ -28,6 +28,19 @@ export {
 	resolveShortleashInput,
 	shortleashDefinitionFromBead,
 } from "./orchestration/adapters/beads";
+export type {
+	GasCityCommandResult,
+	GasCityCommandRunner,
+	GasCityWorkflowOptions,
+	GasCityWorkflowResult,
+} from "./orchestration/adapters/gascity";
+export {
+	compileShortleashToGasCity,
+	GasCityCommandError,
+	parseGasCityJson,
+	runGasCityCommand,
+	runGasCityJson,
+} from "./orchestration/adapters/gascity";
 export {
 	hasShortleashMetadata,
 	normalizeMetadataObject,
@@ -60,6 +73,11 @@ export type {
 } from "./orchestration/execution/auto";
 export { runClaimedShortleash } from "./orchestration/execution/auto";
 export { mapWithConcurrency } from "./orchestration/execution/concurrency";
+export type {
+	ShortleashExecutorOptions,
+	ShortleashPolicyJudgeOptions,
+} from "./orchestration/execution/executor";
+export { createShortleashPolicyJudge } from "./orchestration/execution/executor";
 export type { PipelineOptions, PipelineProgress, PipelineResult } from "./orchestration/execution/pipeline";
 export { PipelineController } from "./orchestration/execution/pipeline";
 export type { AbortSignalScope } from "./orchestration/execution/signals";
@@ -93,6 +111,9 @@ export type {
 	ShortleashPolicyContext,
 	ShortleashPolicyDecision,
 	ShortleashPolicyFailure,
+	ShortleashPolicyJudge,
+	ShortleashPolicyJudgeRequest,
+	ShortleashPolicyJudgeResult,
 	ShortleashPolicyKind,
 	ShortleashPolicyModule,
 	ShortleashPolicyObservation,

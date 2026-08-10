@@ -4,9 +4,9 @@ Shortleash integrates two existing surfaces: an OMP extension for interactive ru
 
 ## Inputs and planning
 
-A definition is JSON with a top-level `swarm` object. The parser accepts named agents, `waits_for`/`reports_to` relationships, optional workspace isolation/history inheritance, and top-level or agent-scoped policy references.
+A definition is JSON with a top-level `shortleash` object; the legacy top-level `swarm` key is accepted when it is the only definition key. The parser accepts named agents, `waits_for`/`reports_to` relationships, optional workspace isolation/history inheritance, and top-level or agent-scoped policy references.
 
-The `swarm` spelling is a format-level compatibility key only; the package, commands, Beads metadata, state paths, and policy module paths use **Shortleash**.
+New definitions and serialized examples use `shortleash` consistently across the definition format, package APIs, commands, metadata, state paths, and policy module paths.
 
 A Beads input is an issue ID or `issue://<id>`. The adapter reads:
 
@@ -42,6 +42,21 @@ A definition without `agents` is intentionally different: it sends its task to t
 The extension also registers Beads hooks. A simple `bd show` call is validated and rendered through the documented Bash surface; complex shell commands are not rewritten. A valid direct `bd update <id> --claim` with `metadata.shortleash` starts the persisted run after the claim succeeds. Existing running or completed state is not silently duplicated.
 
 
+## Gas City backend
+
+`/shortleash run <file.json|issue-id> --gascity` validates the definition, snapshots referenced policy modules, writes executable policy bridges, cooks a Gas City v2 workflow, and routes its root to the configured target. The extension defaults to the `omp` target; pass `--gascity-target <target>` for another configured agent or pool. An epic input gets one Shortleash bridge child; a non-epic input is attached directly. The persisted materialization identity lives under `<city>/.omp/shortleash/gascity/<formula>/`.
+
+The extension performs the equivalent of:
+
+```text
+gc formula cook <formula>
+gc sling <target> <root-bead-id> --no-formula
+gc bd ready
+gc status
+```
+
+Gas City policy steps invoke the same TypeScript policy registry through a content-hash-verified bridge. A rejected check/evaluator exits non-zero and leaves the Gas City workflow blocked; bridge history and result artifacts are stored beside the workflow. Gas City owns scheduling, worker sessions, retries, and workflow state after routing. OMP-only worktree/history inheritance and `agent_timeout_ms` settings are reported as warnings and must be configured in Gas City/provider settings.
+
 ## Durable run contract
 
 `StateTracker` owns the run lock, JSON persistence, normalization of recoverable state, and update methods. The persisted record contains definition identity, agent states, attempt-indexed results, policy decisions, policy observations, projection history, and the optional run manifest.
@@ -74,6 +89,8 @@ For each topological wave:
 For `workspace_isolation: worktree`, OMP closes isolated sessions after each turn. Shortleash therefore reopens the same child session journal in a fresh isolated invocation for corrective attempts, so each correction retains transcript context and produces a mergeable patch.
 
 Checks and evaluators are direct `.ts` modules. A check file default-exports `{ description, check }`; an evaluator file default-exports `{ version, description, evaluate }`. References are paths relative to the definition file, or `{ path, params }` objects for scalar parameters. A check returns a boolean or structured result. An evaluator returns an outcome, explanation, findings, and evidence references. Supported policy boundaries are `agent`, `wave`, and `complete`; a blocking rejection prevents a completed run. Policy context includes the normalized definition, paths, boundary, optional attempt/wave/agent, scalar reference parameters, latest results, result history, and current durable state.
+OMP-hosted policy contexts also expose optional `context.judge({ prompt, outputSchema, agent?, model?, schemaMode? })`. It uses a separate durable structured-subagent child session and returns parsed data plus a `shortleash://` evidence reference. Standalone and Gas City policy execution does not provide a host-backed judge.
+
 
 The graph is executed once. Corrective attempts are bounded follow-up turns for the same worker; they are not target counts, batch iterations, or repeated graph passes.
 

@@ -2,13 +2,22 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { SingleResult } from "@oh-my-pi/pi-coding-agent";
+
 import { resolveShortleashPlan } from "../../../src/orchestration/definition/plan";
 import { parseShortleash } from "../../../src/orchestration/definition/schema";
 import {
+	combineShortleashPolicyDecisions,
+	finalizeShortleashPolicyBoundaries,
+} from "../../../src/orchestration/policy/finalization";
+import {
 	loadShortleashPolicyModules,
 	type ShortleashPolicyContext,
+	type ShortleashPolicyJudge,
 	ShortleashPolicyRegistry,
 } from "../../../src/orchestration/policy/policies";
+
+import type { ShortleashPolicyDecision } from "../../../src/orchestration/policy/policy-types";
 
 const CHECK_PATH = path.resolve(import.meta.dir, "../../fixtures/check-passes.ts");
 const EVAL_PATH = path.resolve(import.meta.dir, "../../fixtures/eval-fails.ts");
@@ -20,7 +29,7 @@ function policyPath(name: string): string {
 function definitionWith(...sections: string[]): ReturnType<typeof parseShortleash> {
 	return parseShortleash(
 		JSON.stringify({
-			swarm: {
+			shortleash: {
 				name: "policy-test",
 				workspace: "./workspace",
 				checks: sections.includes("checks") ? [CHECK_PATH] : [],
@@ -64,7 +73,7 @@ describe("Shortleash policy modules", () => {
 	it("parses direct module paths and object parameters", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "policy-test",
 					workspace: "./workspace",
 					checks: [CHECK_PATH, { path: CHECK_PATH, params: { count: 3, strict: true } }],
@@ -114,9 +123,7 @@ describe("Shortleash policy modules", () => {
 			const invalidPath = path.join(tempDir, "invalid.ts");
 			await fs.writeFile(invalidPath, "export default {} as const;\n");
 			const definition = parseShortleash(
-				JSON.stringify({
-					swarm: { name: "invalid-module", workspace: ".", checks: [invalidPath] },
-				}),
+				JSON.stringify({ shortleash: { name: "invalid-module", workspace: ".", checks: [invalidPath] } }),
 			);
 			const loaded = await loadShortleashPolicyModules({ paths: [invalidPath], definitionDir: tempDir });
 			expect(loaded.errors).toEqual([expect.stringContaining("Module must default-export a Shortleash check")]);
@@ -130,9 +137,7 @@ describe("Shortleash policy modules", () => {
 
 	it("runs checks at their declared boundary", async () => {
 		const definition = parseShortleash(
-			JSON.stringify({
-				swarm: { name: "boundary-test", workspace: ".", checks: [policyPath("boundary")] },
-			}),
+			JSON.stringify({ shortleash: { name: "boundary-test", workspace: ".", checks: [policyPath("boundary")] } }),
 		);
 		const registry = new ShortleashPolicyRegistry();
 		registry.register(policyPath("boundary"), {
@@ -148,11 +153,49 @@ describe("Shortleash policy modules", () => {
 		expect(completeDecision.failures[0]?.source).toBe("check");
 	});
 
+	it("forwards an OMP-hosted judge through the policy context", async () => {
+		const modulePath = policyPath("judge-context");
+		const definition = parseShortleash(
+			JSON.stringify({
+				shortleash: {
+					name: "judge-context",
+					workspace: ".",
+					checks: [modulePath],
+				},
+			}),
+		);
+		const judge: ShortleashPolicyJudge = async request => {
+			expect(request.outputSchema).toEqual({ type: "object" });
+			return {
+				data: { approved: true },
+				result: {} as SingleResult,
+				evidenceRef: "shortleash://context/policy-judges/test.json",
+			};
+		};
+		const registry = new ShortleashPolicyRegistry();
+		registry.register(modulePath, {
+			description: "uses a host-backed judge",
+			boundary: "complete",
+			check: async policyContext => {
+				const verdict = await policyContext.judge?.({
+					prompt: "Return whether the evidence is acceptable.",
+					outputSchema: { type: "object" },
+				});
+				return verdict?.data.approved === true;
+			},
+		});
+
+		const decision = await registry.evaluate(definition, { ...context(definition), judge });
+
+		expect(decision.accepted).toBe(true);
+		expect(decision.failures).toEqual([]);
+	});
+
 	it("evaluates agent-scoped module references with the agent context", async () => {
 		const modulePath = policyPath("agent-only");
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "scoped-policy-test",
 					workspace: ".",
 					agents: {
@@ -179,7 +222,7 @@ describe("Shortleash policy modules", () => {
 		const modulePath = policyPath("parameterized");
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "parameterized-policy-test",
 					workspace: ".",
 					checks: [{ path: modulePath, params: { extension: ".rs", count: 3, enabled: true } }],
@@ -220,7 +263,7 @@ describe("Shortleash policy modules", () => {
 			await fs.writeFile(
 				definitionPath,
 				JSON.stringify({
-					swarm: {
+					shortleash: {
 						name: "relative-policy",
 						workspace: ".",
 						checks: [{ path: "./checks.ts", params: { strict: true } }],
@@ -234,5 +277,80 @@ describe("Shortleash policy modules", () => {
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}
+	});
+	it("shares capture and observation assembly across policy boundaries", async () => {
+		const modulePath = policyPath("shared-finalization");
+		const definition = parseShortleash(
+			JSON.stringify({
+				shortleash: {
+					name: "shared-finalization",
+					workspace: ".",
+					checks: [modulePath],
+				},
+			}),
+		);
+		const registry = new ShortleashPolicyRegistry();
+		let observed: unknown;
+		registry.register(modulePath, {
+			description: "shared finalization check",
+			boundary: "complete",
+			capture: policyContext => ({ phase: policyContext.phase }),
+			check: policyContext => {
+				observed = policyContext.observation;
+				return true;
+			},
+		});
+
+		const policyContext = context(definition);
+		const before = await registry.capture(definition, policyContext, "before", definition);
+		const finalization = await finalizeShortleashPolicyBoundaries(registry, definition, [
+			{ context: policyContext, references: definition, before },
+		]);
+
+		expect(observed).toEqual({
+			before: { phase: "before" },
+			after: { phase: "after" },
+		});
+		expect(finalization.after.size).toBe(1);
+		expect(finalization.boundaries[0]?.decision.accepted).toBe(true);
+	});
+
+	it("keeps the terminal boundary when combining agent and completion decisions", () => {
+		const agentDecision: ShortleashPolicyDecision = {
+			boundary: "agent",
+			accepted: false,
+			failures: [
+				{
+					source: "check",
+					id: "agent",
+					message: "agent failed",
+					findings: [],
+					evidenceRefs: [],
+				},
+			],
+			evaluations: [],
+		};
+		const completeDecision: ShortleashPolicyDecision = {
+			boundary: "complete",
+			accepted: false,
+			failures: [],
+			evaluations: [
+				{
+					id: "complete",
+					version: "1",
+					outcome: "fail",
+					explanation: "completion failed",
+					findings: [],
+					evidenceRefs: [],
+				},
+			],
+		};
+
+		const combined = combineShortleashPolicyDecisions([agentDecision, completeDecision]);
+
+		expect(combined.boundary).toBe("complete");
+		expect(combined.failures).toEqual(agentDecision.failures);
+		expect(combined.evaluations).toEqual(completeDecision.evaluations);
+		expect(combined.accepted).toBe(false);
 	});
 });

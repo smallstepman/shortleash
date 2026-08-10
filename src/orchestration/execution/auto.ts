@@ -5,6 +5,7 @@ import { createShortleashRunManifest } from "../definition/manifest";
 import { resolveShortleashPlan, type ShortleashPlan } from "../definition/plan";
 import { fingerprintShortleashDefinition } from "../definition/schema";
 import { attachShortleashDashboard } from "../presentation/dashboard";
+import { createShortleashPolicyJudge } from "./executor";
 import { PipelineController } from "./pipeline";
 import type { PipelineStatus } from "./state";
 import { StateTracker } from "./state";
@@ -103,6 +104,15 @@ export async function runClaimedShortleash(
 		const beadsProjector = plan.source.beadId
 			? createShortleashBeadsProjector(plan.source.beadId, ctx.cwd)
 			: undefined;
+		const policyJudge = createShortleashPolicyJudge({
+			workspace,
+			shortleashDir: stateTracker.shortleashDir,
+			shortleashName: definition.name,
+			modelRegistry: ctx.modelRegistry,
+			settings,
+			parentMessages,
+			signal: runAbortController.signal,
+		});
 		const result = await new PipelineController(definition, waves, stateTracker).run({
 			workspace,
 			cwd: ctx.cwd,
@@ -111,6 +121,7 @@ export async function runClaimedShortleash(
 			modelRegistry: ctx.modelRegistry,
 			settings,
 			parentMessages,
+			policyJudge,
 			policyRegistry,
 			beadsProjector,
 		});

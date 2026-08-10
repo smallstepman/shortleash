@@ -95,6 +95,7 @@ export async function runBeadsCommand(args: readonly string[], cwd: string, sign
 
 	const processHandle = Bun.spawn(["bd", ...args], {
 		cwd,
+		env: { ...process.env, PWD: cwd },
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",

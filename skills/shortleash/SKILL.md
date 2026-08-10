@@ -37,7 +37,7 @@ Do not create artificial agents for a small linear edit. Use ordinary OMP execut
    }
    ```
 
-2. Keep one durable logical run for the objective. Choose a stable `swarm.name` and a workspace that all agents may safely share.
+2. Keep one durable logical run for the objective. Choose a stable `shortleash.name` and a workspace that all agents may safely share.
 3. Inspect the definition before running it:
 
    ```bash
@@ -49,13 +49,13 @@ Do not create artificial agents for a small linear edit. Use ordinary OMP execut
 
 ## Write a definition
 
-The file must contain a top-level `swarm` object. JSON uses snake_case fields. `name` may contain letters, numbers, dots, underscores, and dashes. `workspace` is required and is resolved relative to the definition file (or the current directory for a Beads input).
+The file must contain a top-level `shortleash` object. The legacy top-level `swarm` key remains accepted when it is the only definition key. JSON uses snake_case fields. `name` may contain letters, numbers, dots, underscores, and dashes. `workspace` is required and is resolved relative to the definition file (or the current directory for a Beads input).
 
-The `swarm` spelling is retained only as the format-level key; package APIs, commands, metadata, state paths, and policy module paths use **Shortleash**.
+New definitions and serialized examples use the `shortleash` spelling consistently across the definition format, package APIs, commands, metadata, state paths, and policy module paths.
 
 ```json
 {
-  "swarm": {
+  "shortleash": {
     "name": "api-hardening",
     "workspace": "./workspace",
     "failure_policy": "skip_dependents",
@@ -104,6 +104,7 @@ Use the OMP TUI for direct current-session work or declared-agent runs with the 
 /shortleash run path/to/shortleash.json
 /shortleash run path/to/shortleash.json --resume
 /shortleash run path/to/shortleash.json --restart
+/shortleash run path/to/shortleash.json --gascity
 /shortleash status api-hardening
 /shortleash evaluate path/to/shortleash.json --json
 /shortleash reconcile issue://beads-id --json
@@ -133,6 +134,8 @@ Policies are executable runtime contracts, not prompt instructions.
 - Optional `capture(context)` functions can record before/after observations. Those observations are persisted and supplied to the corresponding evaluation.
 - Boundaries are `agent`, `wave`, and `complete`. A policy with no explicit boundary defaults to `agent` for agent-scoped references and `complete` for top-level references; set `boundary` explicitly when placement matters.
 - Top-level checks and evaluators are inherited by declared agents as applicable. Agent-scoped failures can return corrective feedback to the same worker; a later successful attempt does not erase the rejected result from policy history.
+- In an OMP-hosted run, `context.judge({ prompt, outputSchema, agent?, model?, schemaMode? })` is available for model-backed structured judgments. Treat it as optional: standalone and Gas City policy execution do not provide a judge, and deterministic checks/evaluators should remain the acceptance authority.
+
 
 Each `checks` or `evals` entry is a path to one `.ts` module, resolved relative to the definition file. Use an object when the module needs scalar parameters:
 
@@ -187,6 +190,19 @@ export default {
 ```
 
 Keep policy code deterministic where possible. Make findings actionable, attach stable evidence references, and ensure the evaluator checks the repository revision and artifacts it claims to assess. The parser rejects non-`.ts` paths and unknown reference fields; there is no separate plugin list or discovery search.
+
+## Gas City backend
+
+Use `--gascity` when Gas City should own durable scheduling and worker lifecycle:
+
+```text
+/shortleash run path/to/shortleash.json --gascity [--gascity-target <target>]
+gc status
+gc dashboard
+```
+
+The extension validates the definition, snapshots and hash-checks the referenced policy modules, compiles a Gas City v2 formula, writes bridge history/evidence under `<city>/.omp/shortleash/gascity/<formula>/`, and routes the cooked root to `omp` by default. Pass `--gascity-target <target>` for another configured agent or pool. Gas City owns retries and workflow state after routing. OMP-only worktree isolation, parent transcript inheritance, and `agent_timeout_ms` are reported as warnings and must be configured through Gas City/provider settings.
+
 ## Use Beads as a projection
 
 A Beads-backed input stores the same definition under `metadata.shortleash`; it is not a separate compact schema:
@@ -227,7 +243,7 @@ A reconciliation warning must not be converted into a successful workflow result
 
 After a host or process restart:
 
-1. Reuse the same definition path, `swarm.name`, workspace, and Beads reference.
+1. Reuse the same definition path, `shortleash.name`, workspace, and Beads reference.
 2. Run `/shortleash run ... --resume`.
 3. Confirm the definition hash, workspace, and agent set still match. Shortleash refuses incompatible resumes.
 4. Inspect `state/pipeline.json`, `policyHistory`, `projectionHistory`, and logs.

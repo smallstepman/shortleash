@@ -31,6 +31,25 @@ import type { ShortleashState } from "../execution/state";
 
 type MaybePromise<T> = T | Promise<T>;
 
+export interface ShortleashPolicyJudgeRequest {
+	prompt: string;
+	outputSchema: unknown;
+	agent?: string;
+	model?: string;
+	schemaMode?: "permissive" | "strict";
+	signal?: AbortSignal;
+}
+
+export interface ShortleashPolicyJudgeResult<T = unknown> {
+	data: T;
+	result: SingleResult;
+	evidenceRef: string;
+}
+
+export type ShortleashPolicyJudge = <T = unknown>(
+	request: ShortleashPolicyJudgeRequest,
+) => Promise<ShortleashPolicyJudgeResult<T>>;
+
 export interface ShortleashPolicyContext {
 	definition: ShortleashDefinition;
 	cwd: string;
@@ -49,6 +68,10 @@ export interface ShortleashPolicyContext {
 	latestResults: ReadonlyMap<string, SingleResult>;
 	history: ReadonlyMap<string, readonly SingleResult[]>;
 	state: Readonly<ShortleashState>;
+	/** Host-provided abort signal for long-running policy work. */
+	signal?: AbortSignal;
+	/** Optional host-backed structured subagent capability for LLM judgments. */
+	judge?: ShortleashPolicyJudge;
 }
 
 export interface ShortleashPolicyCaptureContext extends ShortleashPolicyContext {

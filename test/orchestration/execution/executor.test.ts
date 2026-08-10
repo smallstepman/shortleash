@@ -261,7 +261,7 @@ describe("direct current-session execution", () => {
 	it("sends a no-agent definition through the host session instead of spawning a worker", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "direct-execution",
 					workspace: ".",
 					task: "Inspect the current workspace and report findings.",
@@ -282,7 +282,7 @@ describe("direct current-session execution", () => {
 	it("rejects direct execution when agents are declared", () => {
 		const definition = parseShortleash(
 			JSON.stringify({
-				swarm: {
+				shortleash: {
 					name: "delegated-execution",
 					workspace: ".",
 					agents: {

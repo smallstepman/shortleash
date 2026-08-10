@@ -1,6 +1,6 @@
 # Shortleash architecture
 
-Shortleash is a policy-enforced worker runner for a declared implementation graph. A definition names the workspace, agents, dependencies, and code-defined checks/evaluators. The runner executes the graph once, persists every agent attempt and policy decision, and optionally projects lifecycle notes to a Beads issue.
+Shortleash is a policy-enforced worker runner for a declared implementation graph. A definition names the workspace, agents, dependencies, and code-defined checks/evaluators. The default OMP backend executes the graph once and persists every agent attempt and policy decision; the optional Gas City backend compiles the same graph into a Gas City v2 workflow and delegates scheduling, worker sessions, retries, and workflow state to Gas City.
 
 ## Product boundary
 
@@ -18,21 +18,35 @@ JSON or metadata.shortleash
 ```
 
 The graph is the execution plan. Agents with no dependencies form the initial wave; each later wave waits for its dependencies. In-wave concurrency follows the host's `task.maxConcurrency` setting. Explicit `waits_for` and `reports_to` relationships define the graph. Every configured graph runs once; corrective follow-up is an attempt on the same agent, not a second graph pass.
+The backend boundary is explicit:
+
+```text
+OMP mode
+  -> OMP structured subagents
+  -> Shortleash state and policy engine
+
+Gas City mode
+  -> Gas City v2 formula
+  -> executable Shortleash policy bridges
+  -> Gas City workflow graph and worker lifecycle
+```
+
+Gas City policy bridges retain the custom JavaScript/TypeScript policy contract without introducing a second scheduler. They snapshot module hashes, invoke the existing policy registry at Gas City check boundaries, and persist attempt evidence under `<city>/.omp/shortleash/gascity/<formula>/`.
 
 The orchestration core does not require Beads:
 
-- `src/orchestration/definition/schema.ts` parses and normalizes the `swarm` configuration.
+- `src/orchestration/definition/schema.ts` parses and normalizes the `shortleash` configuration.
 - `src/orchestration/definition/plan.ts` resolves a file or `issue://` input, loads the referenced TypeScript policy modules, validates the graph, and produces waves.
 - `src/orchestration/execution/dag.ts` builds dependencies, detects cycles, and topologically sorts waves.
 - `src/orchestration/execution/pipeline.ts` coordinates waves, failure policy, policy boundaries, persistence, and projection.
 - `src/orchestration/execution/executor.ts` resolves OMP agent profiles, creates durable child sessions, delegates tool/isolation policy to the structured subagent API, and performs corrective turns.
 - `src/orchestration/execution/state.ts` owns the durable run state and run lock.
 
-The OMP extension is the adapter around that core. It provides the TUI dashboard, current-session execution for definitions without declared agents, and Beads claim hooks.
+The OMP extension is the adapter around these backends. It provides the TUI dashboard, current-session execution for definitions without declared agents, the Gas City compiler/bridge entrypoint, and Beads claim hooks.
 
 ## Authority and persistence
 
-`StateTracker`'s JSON snapshot is the authoritative persisted record for a Shortleash run. It lives at `<workspace>/.shortleash_<name>/state/pipeline.json` and contains:
+For the OMP backend, `StateTracker`'s JSON snapshot is the authoritative persisted record for a Shortleash run. It lives at `<workspace>/.shortleash_<name>/state/pipeline.json` and contains:
 
 - definition hash, workspace, manifest, and run status;
 - per-agent status, wave, current attempt, bounded native-tool history, and errors;
@@ -41,6 +55,8 @@ The OMP extension is the adapter around that core. It provides the TUI dashboard
 - Beads projection attempts and their errors.
 
 Writes use a serialized temporary-file, `fsync`, rename, and directory-sync sequence. A `run.lock` records the process identity, definition hash, and workspace. A live lock is never stolen. A stale lock is recoverable only through explicit `--resume` or `--restart` handling.
+
+For Gas City mode, the cooked Gas City workflow and its Beads graph are authoritative for scheduling and worker lifecycle. `<city>/.omp/shortleash/gascity/<formula>/workflow.json` records the materialization identity; bridge configs, policy history, and result artifacts are evidence and policy state. `--resume` reuses that materialization only when the definition and policy bundle hashes still match.
 
 The `logs/` directory is supplemental operator history, not a second state machine:
 
@@ -62,11 +78,14 @@ Policies are direct JavaScript/TypeScript module contracts. Each path in `checks
 - A check returns `boolean` or `{ passed, message, findings, evidenceRefs }`.
 - An evaluator returns `{ outcome, explanation, findings, evidenceRefs }`; its declared `version` and `blocking` behavior are recorded with the decision.
 - Supported boundaries are `agent`, `wave`, and `complete`.
-- Agent policies run after an agent result is produced. A rejection is converted into corrective feedback and sent through the existing worker session; each follow-up result is persisted under its attempt number.
+- OMP agent policies run after an agent result is produced. A rejection is converted into corrective feedback and sent through the existing worker session; each follow-up result is persisted under its attempt number.
 - Wave and completion policies run after the corresponding graph boundary. A rejected blocking decision marks the run failed and remains in policy history.
 - Captures are optional before/after snapshots. They are evidence for the policy decision, not acceptance by themselves.
 
 The policy context includes the normalized definition, current workspace paths, boundary, optional wave/agent/attempt, reference parameters, latest results, historical results, and the durable `ShortleashState`. Policy code decides domain acceptance; the runtime supplies execution ordering, persistence, and blocking semantics.
+In an OMP-hosted run, policy modules may use the optional `context.judge` capability for model-backed structured judgments. The extension delegates that call to OMP's structured-subagent API in a separate durable child session and records the returned artifact as evidence; standalone and Gas City execution leave the capability unset.
+
+In Gas City mode, the same registry runs from an executable bridge attached to each generated check step. The bridge exits non-zero on a rejected decision, writes findings/evidence, and leaves Gas City's control bead blocked for its retry/corrective-session semantics.
 
 ## Failure, recovery, and projection
 
@@ -80,7 +99,7 @@ A failed policy decision blocks completion regardless of a worker's exit message
 
 For a Beads-backed input, `src/orchestration/adapters/beads.ts` reads `bd show <id> --json` and validates `metadata.shortleash` against the same definition schema. Lifecycle events are projected as idempotent notes such as `[shortleash:name] started: running`; the adapter does not close the issue or replace the authoritative state. `reconcile` reports a missing Bead or manual closure while the Shortleash state is non-terminal/non-completed as drift.
 
-The OMP extension registers `/shortleash run`, `plan`, `status`, `evaluate`, and `reconcile`, attaches the dashboard, handles Beads claim hooks, and keeps no-agent definitions in the current OMP session.
+The OMP extension registers `/shortleash run`, `plan`, `status`, `evaluate`, and `reconcile`, accepts the `--gascity` backend flag, attaches the dashboard for local runs, handles Beads claim hooks, and keeps no-agent definitions in the current OMP session.
 
 ## Deliberate non-goals
 
@@ -88,4 +107,4 @@ Shortleash does not create a Beads child for every agent, treat prompt instructi
 
 ## Verification surface
 
-The repository tests cover definition parsing and metadata validation, dependency waves, state persistence and recovery, policy capture/evaluation, same-session corrective attempts, executor options, Beads projection/reconciliation, extension command handling, and TUI rendering.
+The repository tests cover definition parsing and metadata validation, dependency waves, state persistence and recovery, policy capture/evaluation, same-session corrective attempts, Gas City formula compilation and policy bridges, executor options, Beads projection/reconciliation, extension command handling, and TUI rendering.
