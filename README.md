@@ -99,7 +99,7 @@ Use `/shortleash run <definition> --gascity` when Gas City should own the durabl
 1. validates the Shortleash definition and snapshots every referenced policy module;
 2. writes executable policy bridges and durable evidence paths under `<city>/.omp/shortleash/gascity/<formula>/`;
 3. compiles dependency edges, worker steps, policy checks, and the completion gate into a Gas City v2 formula;
-4. runs `gc formula cook`, optionally attaching an `issue://<id>` input, then routes the returned root to Gas City's `omp` target.
+4. runs `gc formula cook`, optionally attaching an `issue://<id>` input, then routes and nudges the returned root to Gas City's `omp` target.
 
 The extension routes to `omp` by default. Override the target when the city uses another configured agent or pool:
 

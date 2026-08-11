@@ -813,7 +813,9 @@ function formatGasCityRunResult(plan: ShortleashPlan, result: GasCityWorkflowRes
 		...result.warnings.map(warning => `Warning: ${warning}`),
 		...(result.routedTo
 			? ["Gas City owns scheduling, worker sessions, retries, and workflow state."]
-			: [`Route the root with 'gc sling <target> ${result.rootId} --no-formula' so Gas City can schedule it.`]),
+			: [
+					`Route the root with 'gc sling <target> ${result.rootId} --no-formula --nudge' so Gas City can schedule it.`,
+				]),
 	];
 }
 

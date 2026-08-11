@@ -50,7 +50,7 @@ The extension performs the equivalent of:
 
 ```text
 gc formula cook <formula>
-gc sling <target> <root-bead-id> --no-formula
+gc sling <target> <root-bead-id> --no-formula --nudge
 gc bd ready
 gc status
 ```

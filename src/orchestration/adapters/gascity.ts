@@ -199,6 +199,7 @@ export async function compileShortleashToGasCity(
 		definitionHash,
 		policyBundleHash,
 		options.maxCheckAttempts ?? DEFAULT_GAS_CITY_CHECK_ATTEMPTS,
+		options.routeTarget,
 	);
 	await fs.mkdir(path.dirname(formulaPath), { recursive: true });
 	await fs.writeFile(formulaPath, formula, "utf8");
@@ -356,7 +357,7 @@ async function routeGasCityWorkflow(
 ): Promise<string> {
 	const normalizedTarget = target.trim();
 	if (!normalizedTarget) throw new Error("Gas City route target must not be empty.");
-	await runGasCityJson(["sling", normalizedTarget, rootId, "--no-formula"], cwd, undefined, run);
+	await runGasCityJson(["sling", normalizedTarget, rootId, "--no-formula", "--nudge"], cwd, undefined, run);
 	return normalizedTarget;
 }
 
@@ -465,6 +466,7 @@ function renderGasCityFormula(
 	definitionHash: string,
 	policyBundleHash: string,
 	maxCheckAttempts: number,
+	routeTarget?: string,
 ): string {
 	const specsById = new Map(specs.map(spec => [spec.step.id, spec]));
 	const lines = [
@@ -491,7 +493,8 @@ function renderGasCityFormula(
 		lines.push(`shortleash_policy_bundle_hash = ${tomlString(policyBundleHash)}`);
 		lines.push(`shortleash_failure_policy = ${tomlString(plan.definition.failurePolicy)}`);
 		lines.push(`"gc.continuation_group" = ${tomlString(`shortleash-${definitionHash}-${step.id}`)}`);
-		if (step.agent?.agent) lines.push(`"gc.run_target" = ${tomlString(step.agent.agent)}`);
+		const runTarget = routeTarget ?? step.agent?.agent;
+		if (runTarget) lines.push(`"gc.run_target" = ${tomlString(runTarget)}`);
 		const model = step.agent?.model ?? plan.definition.model;
 		if (model) lines.push(`opt_model = ${tomlString(model)}`);
 		if (step.checks.checks.length > 0 || step.checks.evals.length > 0) {

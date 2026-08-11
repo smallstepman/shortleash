@@ -201,7 +201,7 @@ gc status
 gc dashboard
 ```
 
-The extension validates the definition, snapshots and hash-checks the referenced policy modules, compiles a Gas City v2 formula, writes bridge history/evidence under `<city>/.omp/shortleash/gascity/<formula>/`, and routes the cooked root to `omp` by default. Pass `--gascity-target <target>` for another configured agent or pool. Gas City owns retries and workflow state after routing. OMP-only worktree isolation, parent transcript inheritance, and `agent_timeout_ms` are reported as warnings and must be configured through Gas City/provider settings.
+The extension validates the definition, snapshots and hash-checks the referenced policy modules, compiles a Gas City v2 formula, writes bridge history/evidence under `<city>/.omp/shortleash/gascity/<formula>/`, and routes plus nudges the cooked root to `omp` by default. Pass `--gascity-target <target>` for another configured agent or pool. Gas City owns retries and workflow state after routing. OMP-only worktree isolation, parent transcript inheritance, and `agent_timeout_ms` are reported as warnings and must be configured through Gas City/provider settings.
 
 ## Use Beads as a projection
 

@@ -135,7 +135,7 @@ describe("Gas City Shortleash adapter", () => {
 
 		expect(resumed.rootId).toBe(first.rootId);
 		expect(resumed.routedTo).toBe("omp");
-		expect(routed).toEqual([["sling", "omp", "gc-root", "--no-formula", "--json"]]);
+		expect(routed).toEqual([["sling", "omp", "gc-root", "--no-formula", "--nudge", "--json"]]);
 		expect(cooks).toBe(1);
 		expect(JSON.parse(await fs.readFile(path.join(first.runtimePath, "workflow.json"), "utf8")).routedTo).toBe("omp");
 	});
@@ -153,15 +153,19 @@ describe("Gas City Shortleash adapter", () => {
 		);
 		const plan = makePlan(definition, root);
 		let cooks = 0;
+		let formulaText = "";
 		const run = async (args: readonly string[]): Promise<string> => {
 			if (args[0] === "formula" && args[1] === "cook") cooks += 1;
-			return gasCityRunner(root, () => {})(args);
+			return gasCityRunner(root, content => {
+				formulaText = content;
+			})(args);
 		};
 		const first = await compileShortleashToGasCity(plan, { cwd: root, routeTarget: "omp", run });
 		const resumed = await compileShortleashToGasCity(plan, { cwd: root, resume: true, routeTarget: "omp", run });
 
 		expect(resumed.rootId).toBe(first.rootId);
 		expect(resumed.routedTo).toBe("omp");
+		expect(formulaText).toContain('"gc.run_target" = "omp"');
 		expect(cooks).toBe(1);
 	});
 
